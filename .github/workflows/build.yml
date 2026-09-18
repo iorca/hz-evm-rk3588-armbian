@@ -27,9 +27,12 @@ env:
   # Pinned on purpose. The rootfs cache name embeds a hash of armbian/build's
   # lib/functions/rootfs/{create-cache,rootfs-create}.sh plus the aggregated
   # package-list hash; pinning keeps those stable so the rootfs tarball
-  # published by the "Rootfs cache" workflow stays reusable here.
-  # Bump this and you must re-run that workflow.
+  # published by the rootfs repo stays reusable here.
+  # Must match Armbian-rootfs-dev's pin, or the cache ids will not line up.
   ARMBIAN_BUILD_SHA: 04108a20e5de1c956425b3f5a2a7cba47ba829b8
+  # The rootfs is a board-independent arm64/noble/cli artifact, so it is built
+  # and published from its own repo rather than from here.
+  ROOTFS_REPO: iorca/Armbian-rootfs-dev
   ROOTFS_TAG: armbian-rootfs-cache
 
 jobs:
@@ -74,12 +77,16 @@ jobs:
           mkdir -p armbian-build/cache/rootfs
           # The rootfs artifact name is
           #   rootfs-<ARCH>-<RELEASE>-<cache_type>_<yyyymm>-<hashes>.tar.zst
-          # and embeds no board name, so a tarball from the rootfs workflow is
-          # reusable here verbatim. If the id no longer matches what this build
-          # computes (month rollover, upstream package-list change, pinned SHA
-          # bump) the file just sits unused and Armbian rebuilds the rootfs -
-          # slower, but never wrong.
+          # and embeds no board name, so the tarball published by
+          # Armbian-rootfs-dev is reusable here verbatim. Note --repo: the asset
+          # lives in that repo, not in this one.
+          #
+          # If the id no longer matches what this build computes (month
+          # rollover, upstream package-list change, ARMBIAN_BUILD_SHA bump) the
+          # file just sits unused and Armbian rebuilds the rootfs - slower, but
+          # never wrong.
           if gh release download "${ROOTFS_TAG}" \
+               --repo "${ROOTFS_REPO}" \
                --pattern '*.tar.zst' \
                --dir armbian-build/cache/rootfs \
                --clobber; then
