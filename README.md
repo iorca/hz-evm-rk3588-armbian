@@ -34,6 +34,7 @@ patch/u-boot/v2026.07/
   dt_upstream_rockchip/rk3588-hz-evm-rk3588.dts               # -> u-boot dts/upstream/src/arm64/rockchip/
 
 .github/workflows/build.yml                                   # CI build -> GitHub Release
+.github/workflows/rootfs.yml                                  # builds/publishes the rootfs cache
 ```
 
 ### Why the `0000.patching_config.yaml` files are mandatory
@@ -66,14 +67,73 @@ The raw `.img` is ~3 GB and exceeds GitHub's 2 GB per-file limit, so the workflo
 always xz-compresses it. `BUILD_MINIMAL` defaults to `no` (full image). Releases are
 permanent, unlike artifacts which expire.
 
-## Build locally
+## Rootfs cache reuse
+
+The rootfs stage is the slowest part of a full build (Armbian debootstraps a whole
+Debian userspace and chroots into it). It can be built **once**, parked in a Release,
+and reused by every subsequent image build.
+
+**`rootfs.yml`** builds it standalone and publishes it to the Release tagged
+`armbian-rootfs-cache`:
 
 ```bash
-git clone --depth 1 --branch=main https://github.com/armbian/build.git armbian-build
+./compile.sh rootfs BOARD=hz-evm-rk3588 BRANCH=current RELEASE=noble \
+  EXPERT=yes KERNEL_CONFIGURE=no BUILD_DESKTOP=no BUILD_MINIMAL=no
+```
+
+**`build.yml`** downloads that asset into `armbian-build/cache/rootfs/` before building.
+If the cache id matches what the build computes for itself, Armbian extracts it
+instead of debootstrapping — 20-40 minutes saved. If it does not match, the file sits
+unused and the rootfs is built from scratch: slower, never wrong. The step is
+`continue-on-error`, so a missing Release cannot break the build.
+
+### Why the cache id can go stale
+
+The tarball is named
+
+```
+rootfs-<ARCH>-<RELEASE>-<cache_type>_<yyyymm>-<AGGREGATED_ROOTFS_HASH>-H<hooks>-B<bash>.tar.zst
+```
+
+Note it carries **no board name** — the rootfs is generic across every
+arm64 / `<release>` / `<cache_type>` board, which is why publishing it works at all.
+Each segment can invalidate a cached tarball:
+
+| Segment | Changes when |
+|---|---|
+| `rootfs-arm64-noble-cli` | you change `RELEASE`, `BUILD_MINIMAL` or the desktop selection. **`cli` and `minimal` are different names and do not share a cache.** |
+| `yyyymm` | the calendar month rolls over — hence the monthly `cron` in `rootfs.yml` |
+| `AGGREGATED_ROOTFS_HASH` | upstream changes the aggregated package list |
+| `H<hooks>` | `custom_apt_repo` hook or `DEST_LANG` changes |
+| `B<bash>` | a hash of **`lib/functions/rootfs/create-cache.sh`** + **`rootfs-create.sh`** only |
+
+That last row is why `ARMBIAN_BUILD_SHA` is **pinned** in both workflows rather than
+tracking `main`: the pin keeps `B<bash>` and the package-list hash stable, so a cache
+built today is still valid next week. Bumping the SHA means re-running `rootfs.yml`.
+
+## Build locally
+
+Pin `armbian/build` to the same revision the workflows use, so the rootfs cache
+published in the Release is still valid for your build:
+
+```bash
+git init armbian-build && cd armbian-build
+git remote add origin https://github.com/armbian/build
+git fetch --depth 1 origin 04108a20e5de1c956425b3f5a2a7cba47ba829b8
+git checkout FETCH_HEAD
+cd ..
 cp -r config patch armbian-build/
 cd armbian-build
 sudo ./compile.sh BOARD=hz-evm-rk3588 BRANCH=current RELEASE=noble \
                  BUILD_DESKTOP=no BUILD_MINIMAL=no KERNEL_CONFIGURE=no EXPERT=yes
+```
+
+To reuse a published rootfs, drop it in place first:
+
+```bash
+mkdir -p armbian-build/cache/rootfs
+gh release download armbian-rootfs-cache --pattern '*.tar.zst' \
+   --dir armbian-build/cache/rootfs
 ```
 
 ## Notes / status

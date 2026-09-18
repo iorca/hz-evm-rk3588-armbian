@@ -23,6 +23,15 @@ on:
       - "patch/**"
       - ".github/workflows/**"
 
+env:
+  # Pinned on purpose. The rootfs cache name embeds a hash of armbian/build's
+  # lib/functions/rootfs/{create-cache,rootfs-create}.sh plus the aggregated
+  # package-list hash; pinning keeps those stable so the rootfs tarball
+  # published by the "Rootfs cache" workflow stays reusable here.
+  # Bump this and you must re-run that workflow.
+  ARMBIAN_BUILD_SHA: 04108a20e5de1c956425b3f5a2a7cba47ba829b8
+  ROOTFS_TAG: armbian-rootfs-cache
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -43,9 +52,13 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Clone Armbian build framework
-        run: |
-          git clone --depth 1 --branch=main https://github.com/armbian/build.git armbian-build
+      - name: Checkout Armbian build framework (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: armbian/build
+          ref: ${{ env.ARMBIAN_BUILD_SHA }}
+          path: armbian-build
+          fetch-depth: 1
 
       - name: Inject board files into the tree
         run: |
@@ -53,8 +66,35 @@ jobs:
           cp -r config armbian-build/
           cp -r patch armbian-build/
 
+      - name: Fetch prebuilt rootfs cache
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p armbian-build/cache/rootfs
+          # The rootfs artifact name is
+          #   rootfs-<ARCH>-<RELEASE>-<cache_type>_<yyyymm>-<hashes>.tar.zst
+          # and embeds no board name, so a tarball from the rootfs workflow is
+          # reusable here verbatim. If the id no longer matches what this build
+          # computes (month rollover, upstream package-list change, pinned SHA
+          # bump) the file just sits unused and Armbian rebuilds the rootfs -
+          # slower, but never wrong.
+          if gh release download "${ROOTFS_TAG}" \
+               --pattern '*.tar.zst' \
+               --dir armbian-build/cache/rootfs \
+               --clobber; then
+            echo "--- rootfs cache applied ---"
+            ls -lh armbian-build/cache/rootfs/
+          else
+            echo "no rootfs cache release yet - Armbian will build the rootfs from scratch"
+          fi
+
       - name: Verify injected overlay
         run: |
+          echo "--- armbian/build revision (must equal the pinned SHA) ---"
+          git -C armbian-build rev-parse HEAD
+          echo "--- rootfs cache (prebuilt, if the id matched) ---"
+          ls -lh armbian-build/cache/rootfs/ 2>/dev/null || echo "(empty - rootfs will be built from scratch)"
           echo "--- board conf ---"
           ls -l armbian-build/config/boards/hz-evm-rk3588.conf || true
           echo "--- kernel dt ---"
