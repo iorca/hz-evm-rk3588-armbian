@@ -1,0 +1,5 @@
+verbosity=7
+earlycon=on
+bootlogo=false
+console=serial
+extraargs=cma=256M

@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * HZ-EVM-RK3588 U-Boot device tree include (mainline u-boot v2026.07)
+ * Boot order + SPL bootph markers.
+ */
+
+#include "rk3588-u-boot.dtsi"
+
+/ {
+	/* Boot order: try SPL source first, then SD, then eMMC */
+	chosen {
+		u-boot,spl-boot-order = "same-as-spl", &sdmmc, &sdhci;
+	};
+
+	bootstd {
+		compatible = "u-boot,boot-std";
+		bootdev-order = "mmc1", "mmc0", "usb0";
+	};
+};
+
+/* eMMC boot support */
+&sdhci {
+	cap-mmc-highspeed;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	mmc-hs400-enhanced-strobe;
+	bootph-pre-ram;
+	bootph-some-ram;
+	status = "okay";
+};
+
+/* TF card (SDMMC) boot support */
+&sdmmc {
+	cap-sd-highspeed;
+	bootph-pre-ram;
+	bootph-some-ram;
+	status = "okay";
+};
+
+/* USB boot support */
+&usb_host0_ehci {
+	status = "okay";
+};
+
+&usb_host0_ohci {
+	status = "okay";
+};
+
+&usb_host0_xhci {
+	status = "okay";
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+/* Enable U-Boot boot menu */
+&uart2 {
+	status = "okay";
+};

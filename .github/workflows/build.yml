@@ -1,0 +1,74 @@
+name: Build Armbian (HZ-EVM-RK3588)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Userspace release (noble / bookworm / trixie)"
+        required: false
+        default: "noble"
+      branch:
+        description: "Kernel branch (current / vendor)"
+        required: false
+        default: "current"
+      minimal:
+        description: "Build minimal CLI image (fits the 2GB artifact limit)"
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - "patch/**"
+      - ".github/workflows/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout board overlay
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+                       /usr/local/lib/android /usr/share/swift 2>/dev/null || true
+          sudo apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox \
+                       google* dotnet* powershell openjdk* moby* || true
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          df -h
+
+      - name: Clone Armbian build framework
+        run: |
+          git clone --depth 1 --branch=main https://github.com/armbian/build.git armbian-build
+
+      - name: Inject board files into the tree
+        run: |
+          # Our config/ and patch/ overlay on top of armbian/build.
+          cp -r config armbian-build/
+          cp -r patch armbian-build/
+
+      - name: Build image
+        working-directory: armbian-build
+        run: |
+          ./compile.sh \
+            BOARD=hz-evm-rk3588 \
+            BRANCH=${{ github.event.inputs.branch || 'current' }} \
+            RELEASE=${{ github.event.inputs.release || 'noble' }} \
+            BUILD_DESKTOP=no \
+            BUILD_MINIMAL=${{ github.event.inputs.minimal == 'true' && 'yes' || 'no' }} \
+            KERNEL_CONFIGURE=no \
+            EXPERT=yes \
+            HOST=armbian \
+            COMPRESS_OUTPUTIMAGE="sha,xz"
+
+      - name: Upload compressed image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Armbian-hz-evm-rk3588
+          path: armbian-build/output/images/*.img.xz
+          if-no-files-found: error
+          retention-days: 30
