@@ -1,8 +1,8 @@
 diff --git a/arch/arm/mach-rockchip/rk3588/Kconfig b/arch/arm/mach-rockchip/rk3588/Kconfig
-index 675f13a..92c4b17 100644
+index 675f13ab66d..c4daa1fdd07 100644
 --- a/arch/arm/mach-rockchip/rk3588/Kconfig
 +++ b/arch/arm/mach-rockchip/rk3588/Kconfig
-@@ -5,6 +5,24 @@ config TARGET_EVB_RK3588
+@@ -5,6 +5,22 @@ config TARGET_EVB_RK3588
  	help
  	  RK3588 EVB is a evaluation board for Rockchp RK3588.
  
@@ -10,7 +10,7 @@ index 675f13a..92c4b17 100644
 +	bool "Hezuo HZ-EVM-RK3588 industrial board"
 +	help
 +	  HZ-EVM-RK3588 is a Rockchip RK3588 (industrial grade RK3588J)
-+	  based evaluation board by Hezuo Hengyue (合众恒跃).
++	  based evaluation board by Hezuo Hengyue.
 +
 +	  Specifications:
 +	  - Rockchip RK3588J SoC, 4x Cortex-A76 + 4x Cortex-A55
@@ -21,13 +21,11 @@ index 675f13a..92c4b17 100644
 +	  - PCIe 3.0 x4 slot
 +	  - HDMI output
 +	  - USB 3.0 / USB 2.0
-+	  - CAN x2
-+	  - Debug UART (UART2), 1500000bps
 +
  config TARGET_CM3588_NAS_RK3588
  	bool "FriendlyElec CM3588 NAS"
  	help
-@@ -427,6 +445,7 @@ source "board/friendlyelec/nanopi-r6c-rk3588s/Kconfig"
+@@ -427,6 +443,7 @@ source "board/friendlyelec/nanopi-r6c-rk3588s/Kconfig"
  source "board/friendlyelec/nanopi-r6s-rk3588s/Kconfig"
  source "board/gameforce/ace-rk3588s/Kconfig"
  source "board/hardkernel/odroid_m2/Kconfig"
@@ -37,7 +35,7 @@ index 675f13a..92c4b17 100644
  source "board/pine64/quartzpro64-rk3588/Kconfig"
 diff --git a/board/hezuo/hz-evm-rk3588/Kconfig b/board/hezuo/hz-evm-rk3588/Kconfig
 new file mode 100644
-index 0000000..0d7eb1a
+index 00000000000..0d7eb1a23fa
 --- /dev/null
 +++ b/board/hezuo/hz-evm-rk3588/Kconfig
 @@ -0,0 +1,17 @@
@@ -60,35 +58,37 @@ index 0000000..0d7eb1a
 +endif
 diff --git a/board/hezuo/hz-evm-rk3588/MAINTAINERS b/board/hezuo/hz-evm-rk3588/MAINTAINERS
 new file mode 100644
-index 0000000..97f984f
+index 00000000000..0cb522264dc
 --- /dev/null
 +++ b/board/hezuo/hz-evm-rk3588/MAINTAINERS
 @@ -0,0 +1,7 @@
-+HZ-EVM-RK3588
-+M:	orca <i.dream@foxmail.com>
++HZ-EVM-RK3588 BOARD
++M:	iorca <i.dream@foxmail.com>
 +S:	Maintained
-+F:	board/hezuo/hz-evm-rk3588
++F:	board/hezuo/hz-evm-rk3588/
 +F:	include/configs/hz-evm-rk3588.h
 +F:	configs/hz-evm-rk3588_defconfig
-+F:	arch/arm/dts/rk3588-hz-evm-rk3588*
++F:	dts/upstream/src/arm64/rockchip/rk3588-hz-evm-rk3588.dts
 diff --git a/include/configs/hz-evm-rk3588.h b/include/configs/hz-evm-rk3588.h
 new file mode 100644
-index 0000000..fae46f7
+index 00000000000..e21f7c2a356
 --- /dev/null
 +++ b/include/configs/hz-evm-rk3588.h
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,18 @@
 +/* SPDX-License-Identifier: GPL-2.0+ */
 +/*
 + * Copyright (c) 2026 Hezuo Hengyue
-+ * HZ-EVM-RK3588 board configuration
++ *
++ * HZ-EVM-RK3588 board configuration.
++ *
++ * Deliberately minimal: rk3588_common.h already supplies SDRAM layout,
++ * ENV_MEM_LAYOUT_SETTINGS and the default (empty) ROCKCHIP_DEVICE_SETTINGS.
++ * The console is selected through the stdout-path property in the board
++ * device tree, not here.
 + */
 +
 +#ifndef __HZ_EVM_RK3588_H
 +#define __HZ_EVM_RK3588_H
-+
-+#define ROCKCHIP_DEVICE_SETTINGS \
-+		"stdout=serial,vidconsole\0" \
-+		"stderr=serial,vidconsole\0"
 +
 +#include <configs/rk3588_common.h>
 +
