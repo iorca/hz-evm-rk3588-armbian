@@ -1,0 +1,95 @@
+diff --git a/arch/arm/mach-rockchip/rk3588/Kconfig b/arch/arm/mach-rockchip/rk3588/Kconfig
+index 675f13a..92c4b17 100644
+--- a/arch/arm/mach-rockchip/rk3588/Kconfig
++++ b/arch/arm/mach-rockchip/rk3588/Kconfig
+@@ -5,6 +5,24 @@ config TARGET_EVB_RK3588
+ 	help
+ 	  RK3588 EVB is a evaluation board for Rockchp RK3588.
+ 
++config TARGET_HZ_EVM_RK3588
++	bool "Hezuo HZ-EVM-RK3588 industrial board"
++	help
++	  HZ-EVM-RK3588 is a Rockchip RK3588 (industrial grade RK3588J)
++	  based evaluation board by Hezuo Hengyue (合众恒跃).
++
++	  Specifications:
++	  - Rockchip RK3588J SoC, 4x Cortex-A76 + 4x Cortex-A55
++	  - LPDDR4x
++	  - eMMC
++	  - MicroSD card slot
++	  - 2x Gigabit Ethernet (GMAC0 + GMAC1)
++	  - PCIe 3.0 x4 slot
++	  - HDMI output
++	  - USB 3.0 / USB 2.0
++	  - CAN x2
++	  - Debug UART (UART2), 1500000bps
++
+ config TARGET_CM3588_NAS_RK3588
+ 	bool "FriendlyElec CM3588 NAS"
+ 	help
+@@ -427,6 +445,7 @@ source "board/friendlyelec/nanopi-r6c-rk3588s/Kconfig"
+ source "board/friendlyelec/nanopi-r6s-rk3588s/Kconfig"
+ source "board/gameforce/ace-rk3588s/Kconfig"
+ source "board/hardkernel/odroid_m2/Kconfig"
++source "board/hezuo/hz-evm-rk3588/Kconfig"
+ source "board/indiedroid/nova/Kconfig"
+ source "board/khadas/khadas-edge2-rk3588s/Kconfig"
+ source "board/pine64/quartzpro64-rk3588/Kconfig"
+diff --git a/board/hezuo/hz-evm-rk3588/Kconfig b/board/hezuo/hz-evm-rk3588/Kconfig
+new file mode 100644
+index 0000000..0d7eb1a
+--- /dev/null
++++ b/board/hezuo/hz-evm-rk3588/Kconfig
+@@ -0,0 +1,17 @@
++if TARGET_HZ_EVM_RK3588
++
++config SYS_BOARD
++	default "hz-evm-rk3588"
++
++config SYS_VENDOR
++	default "hezuo"
++
++config SYS_CONFIG_NAME
++	default "hz-evm-rk3588"
++
++config BOARD_SPECIFIC_OPTIONS # dummy
++	def_bool y
++	select ADC
++	select SPL_ADC
++
++endif
+diff --git a/board/hezuo/hz-evm-rk3588/MAINTAINERS b/board/hezuo/hz-evm-rk3588/MAINTAINERS
+new file mode 100644
+index 0000000..97f984f
+--- /dev/null
++++ b/board/hezuo/hz-evm-rk3588/MAINTAINERS
+@@ -0,0 +1,7 @@
++HZ-EVM-RK3588
++M:	orca <i.dream@foxmail.com>
++S:	Maintained
++F:	board/hezuo/hz-evm-rk3588
++F:	include/configs/hz-evm-rk3588.h
++F:	configs/hz-evm-rk3588_defconfig
++F:	arch/arm/dts/rk3588-hz-evm-rk3588*
+diff --git a/include/configs/hz-evm-rk3588.h b/include/configs/hz-evm-rk3588.h
+new file mode 100644
+index 0000000..fae46f7
+--- /dev/null
++++ b/include/configs/hz-evm-rk3588.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (c) 2026 Hezuo Hengyue
++ * HZ-EVM-RK3588 board configuration
++ */
++
++#ifndef __HZ_EVM_RK3588_H
++#define __HZ_EVM_RK3588_H
++
++#define ROCKCHIP_DEVICE_SETTINGS \
++		"stdout=serial,vidconsole\0" \
++		"stderr=serial,vidconsole\0"
++
++#include <configs/rk3588_common.h>
++
++#endif /* __HZ_EVM_RK3588_H */

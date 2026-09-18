@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
  * HZ-EVM-RK3588 U-Boot device tree include (mainline u-boot v2026.07)
- * Boot order + SPL bootph markers.
+ *
+ * rk3588-u-boot.dtsi -> rk3588s-u-boot.dtsi already provides ALL the
+ * generic rk3588 bootph markers (sdhci/sdmmc/emmc pin groups, cru, ioc,
+ * pinctrl, grf's, xin24m, uart2, ...) and the `binman` simple-bin node
+ * used to produce u-boot-rockchip.bin.
+ *
+ * Therefore this file only carries board-specific extras. Do NOT re-add
+ * generic bootph markers here: every label referenced must resolve
+ * against U-Boot's trimmed rk3588 dtsi, and the generic ones are already
+ * handled upstream.
  */
 
 #include "rk3588-u-boot.dtsi"
 
 / {
-	/* Boot order: try SPL source first, then SD, then eMMC */
 	chosen {
 		u-boot,spl-boot-order = "same-as-spl", &sdmmc, &sdhci;
 	};
@@ -18,43 +26,20 @@
 	};
 };
 
-/* eMMC boot support */
+/* eMMC: HS400 modes, in addition to the bootph markers from upstream */
 &sdhci {
 	cap-mmc-highspeed;
 	mmc-hs200-1_8v;
 	mmc-hs400-1_8v;
 	mmc-hs400-enhanced-strobe;
-	bootph-pre-ram;
-	bootph-some-ram;
-	status = "okay";
 };
 
-/* TF card (SDMMC) boot support */
+/* SD card: high speed modes */
 &sdmmc {
 	cap-sd-highspeed;
-	bootph-pre-ram;
-	bootph-some-ram;
-	status = "okay";
 };
 
-/* USB boot support */
-&usb_host0_ehci {
-	status = "okay";
-};
-
-&usb_host0_ohci {
-	status = "okay";
-};
-
-&usb_host0_xhci {
-	status = "okay";
-};
-
-&u2phy0 {
-	status = "okay";
-};
-
-/* Enable U-Boot boot menu */
+/* Debug UART2 at 24 MHz input clock */
 &uart2 {
-	status = "okay";
+	clock-frequency = <24000000>;
 };

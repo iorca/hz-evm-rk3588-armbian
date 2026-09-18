@@ -53,10 +53,24 @@ jobs:
           cp -r config armbian-build/
           cp -r patch armbian-build/
 
+      - name: Verify injected overlay
+        run: |
+          echo "--- board conf ---"
+          ls -l armbian-build/config/boards/hz-evm-rk3588.conf || true
+          echo "--- kernel dt ---"
+          find armbian-build/patch/kernel -type f || true
+          echo "--- u-boot overlay ---"
+          find armbian-build/patch/u-boot -type f || true
+          echo "--- bootenv ---"
+          cat armbian-build/config/bootenv/rk35xx.txt || true
+
       - name: Build image
         working-directory: armbian-build
         run: |
-          ./compile.sh \
+          # Armbian's compile.sh MUST run as root: it registers qemu binfmt handlers,
+          # sets up loop devices, mounts and chroots into the target rootfs.
+          # Running it as the unprivileged `runner` user aborts early (binfmt/chroot).
+          sudo -E ./compile.sh \
             BOARD=hz-evm-rk3588 \
             BRANCH=${{ github.event.inputs.branch || 'current' }} \
             RELEASE=${{ github.event.inputs.release || 'noble' }} \
@@ -64,17 +78,37 @@ jobs:
             BUILD_MINIMAL=${{ github.event.inputs.minimal == 'true' && 'yes' || 'no' }} \
             KERNEL_CONFIGURE=no \
             EXPERT=yes \
-            HOST=armbian \
             COMPRESS_OUTPUTIMAGE="sha,xz"
+
+      - name: Collect build artifacts
+        id: collect
+        run: |
+          ls -lh armbian-build/output/images/ || true
+          # softprops/action-gh-release does not expand globs for us in all
+          # cases; build the file list explicitly and fail loudly if empty.
+          files=$(ls armbian-build/output/images/*.img.xz 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::error::No .img.xz produced - the build did not complete."
+            ls -lhR armbian-build/output/ || true
+            exit 1
+          fi
+          echo "found: $files"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: armbian-${{ github.run_number }}.${{ github.run_attempt }}
+          tag_name: armbian-${{ github.run_number }}.${{ github.run_attempt }}
           name: Armbian HZ-EVM-RK3588 (${{ github.run_number }})
+          body: |
+            Armbian image for HZ-EVM-RK3588 (Rockchip RK3588), branch `${{ github.event.inputs.branch || 'current' }}`,
+            release `${{ github.event.inputs.release || 'noble' }}`, minimal `${{ github.event.inputs.minimal || 'false' }}`.
+
+            Flash the `.img.xz` to an SD card with balenaEtcher / `armbian-install`, or write it
+            to eMMC via the vendor loader.
           files: |
             armbian-build/output/images/*.img.xz
             armbian-build/output/images/*.img.txt
           fail_on_unmatched_files: true
           prerelease: false
+          draft: false
