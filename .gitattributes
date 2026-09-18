@@ -1,0 +1,25 @@
+# Everything in this repository is consumed by Linux toolchains:
+# dtc/Kconfig compilers, `git apply` for U-Boot and kernel patches, and
+# Armbian's shell/conf overlays. A CRLF introduced by a Windows checkout
+# silently breaks all of them (dtc errors, patch rejects, stray ^M in conf).
+#
+# Lock the repository to LF so the working tree can never disagree with the
+# blobs, regardless of the local `core.autocrlf` setting.
+* text=auto eol=lf
+
+# Explicit, for clarity and in case the blanket rule is ever narrowed.
+*.patch  text eol=lf
+*.dts    text eol=lf
+*.dtsi   text eol=lf
+*.conf   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.sh     text eol=lf
+*.txt    text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+
+# Binary-ish, never touched.
+*.img    binary
+*.xz     binary
+*.bin    binary
