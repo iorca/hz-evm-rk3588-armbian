@@ -504,17 +504,46 @@
 };
 
 &pcie30phy {
-	data-lanes = <1 3 2 4>;
-	status = "okay";
+	/* ★★★ 不要写 data-lanes！
+	 *
+	 * 主线 Rockchip 官方 EVB（rk3588-evb1-v10.dts）这里**只有 status**：
+	 *     &pcie30phy { status = "okay"; };
+	 * 不写 data-lanes 时默认就是 aggregation —— 4 条 lane 全归 pcie3x4。
+	 *
+	 * 本站曾误抄 cm3588-nas 的 `data-lanes = <1 3 2 4>;`，那个值的含义是
+	 * 「4 条 PHY lane 分给 4 个不同控制器，每个 1 lane」（split 模式），
+	 * 见 binding rockchip,pcie3-phy.yaml：
+	 *     which lanes (by position) should be mapped to which controller (value).
+	 *     0 means lane disabled, higher value means used. (controller-number +1)
+	 * 结果：需要 4 lane 的 pcie3x4 只拿到 1 lane → PHY 链路协商失败。
+	 * 这很可能就是之前 pcie3x4 在 "host bridge /pcie@fe150000 ranges:" 之后死等的根因。
+	 *
+	 * 主线其他板的取值：rock-5b-plus / rock-5t / rock-5-itx / neu6b-io 均为
+	 * <1 1 2 2>（2+2 split）；**没有任何板子用 <1 1 1 1>** —— 因为 aggregation
+	 * 的写法就是「不写」。
+	 *
+	 * ★ 将来重开 pcie3x4 / pcie3x2 时：把下面这行改回 "okay" 即可，
+	 *   依然不要加 data-lanes。
+	 *
+	 * 本 PHY 只服务 pcie3x4(fe150000) 与 pcie3x2(fe160000)。两者当前都是
+	 * disabled（核心板 PCIe3 尚未使用，等底板重新绘制后再处理），
+	 * 所以 PHY 一并关闭。注意它**与 pcie2x1l1 无关** —— 后者的 PHY 是
+	 * combphy2_psu，仍在正常工作。
+	 */
+	status = "disabled";
 };
 
-/* ★ 确认挂死元凶：pcie3x4 (fe150000, 4-lane PCIe 3.0)。
- * 实测：pcie3x4-ON 内核在 "host bridge /pcie@fe150000 ranges:" 后死等，进不了 login；
- *       pcie3x4-OFF 正常进系统。故暂关以保基线可用，待修 PERST#/供电/combphy 后重开。
- * 修复方向（需底板原理图确认）：
- *   - reset-gpios 的 PERST# 脚位/极性是否与硬件一致
- *   - vpcie3v3-supply(=vcc3v3_pcie30) 的 3.3V 使能是否真能开（是否另有使能 GPIO）
- *   - pcie30phy data-lanes 顺序是否匹配板级走线
+/* ★ pcie3x4 (fe150000, 4-lane PCIe 3.0) —— 暂关，**不是最终状态**。
+ *
+ * 实测：pcie3x4-ON 内核在 "host bridge /pcie@fe150000 ranges:" 之后死等，
+ *       进不了 login；pcie3x4-OFF 正常进系统。
+ * 已定位到一个明确错误：pcie30phy 的 data-lanes 写法不对（见上面那段注释）。
+ * 但核心板 PCIe3 目前没有实际使用，**等底板重新绘制后再一并处理**：
+ *   - reset-gpios（当前 <&gpio4 RK_PB6 GPIO_ACTIVE_HIGH>，与官方 EVB 逐字一致）
+ *     的 PERST# 脚位/极性是否匹配新底板
+ *   - vpcie3v3-supply(=vcc3v3_pcie30) 的 3.3V 是否另有使能 GPIO
+ *   - pcie30phy 恢复 status = "okay"（**且不加 data-lanes**）
+ *   - 是否需要补 pinctrl-0 = <&pcie3_reset>（官方 EVB 有；本板用 reset-gpios 直连）
  */
 &pcie3x4 {
 	reset-gpios = <&gpio4 RK_PB6 GPIO_ACTIVE_HIGH>;
