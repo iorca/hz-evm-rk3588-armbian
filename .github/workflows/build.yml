@@ -12,10 +12,10 @@ on:
         required: false
         default: "current"
       minimal:
-        description: "Build minimal CLI image (fits the 2GB artifact limit)"
+        description: "Build minimal CLI image (false = full image, published as .img.xz release asset)"
         type: boolean
         required: false
-        default: true
+        default: false
   push:
     branches: [main]
     paths:
@@ -27,6 +27,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    permissions:
+      contents: write
     steps:
       - name: Checkout board overlay
         uses: actions/checkout@v4
@@ -65,10 +67,14 @@ jobs:
             HOST=armbian \
             COMPRESS_OUTPUTIMAGE="sha,xz"
 
-      - name: Upload compressed image
-        uses: actions/upload-artifact@v4
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Armbian-hz-evm-rk3588
-          path: armbian-build/output/images/*.img.xz
-          if-no-files-found: error
-          retention-days: 30
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: armbian-${{ github.run_number }}.${{ github.run_attempt }}
+          name: Armbian HZ-EVM-RK3588 (${{ github.run_number }})
+          files: |
+            armbian-build/output/images/*.img.xz
+            armbian-build/output/images/*.img.txt
+          fail_on_unmatched_files: true
+          prerelease: false

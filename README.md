@@ -31,9 +31,14 @@ cd armbian-build
 
 ## Build via GitHub Actions
 
-Push to `main` (or run **Actions → Build Armbian → Run workflow**). The image is
-uploaded as a `.img.xz` artifact (the raw `.img` exceeds GitHub's 2 GB artifact
-limit, so `BUILD_MINIMAL` defaults to `yes` and the output is xz-compressed).
+Push to `main` (or run **Actions → Build Armbian → Run workflow**). The built image
+is published as a **GitHub Release** (tag `armbian-<run>.<attempt>`), with the
+`.img.xz` (xz-compressed) and `.img.txt` (build info) as release assets.
+
+The raw `.img` is ~3 GB and exceeds GitHub's 2 GB per-file limit, so the workflow
+always xz-compresses and uploads `.img.xz` instead. `BUILD_MINIMAL` defaults to
+`no` (full image); set it to `yes` in the workflow inputs if you want a smaller
+minimal CLI image. Releases are permanent (unlike artifacts, which expire).
 
 ## Notes / status
 
