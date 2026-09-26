@@ -18,7 +18,14 @@ patch/kernel/rk35xx-current/
                                                               #   to copy dt/*.dts into
                                                               #   arch/arm64/boot/dts/rockchip/
                                                               #   and auto-patch the Makefile
+  0001-arm64-dts-rockchip-enable-DT-symbols-*.patch           # optional: allows U-Boot
+                                                              #   runtime DT overlays on this board
+  0002-drm-panel-add-tianma-tl060fvxs07-*.patch               # optional: MIPI-DSI panel driver
   dt/rk3588-hz-evm-rk3588.dts                                 # full Linux device tree
+drivers/panel-tianma-tl060fvxs07.c                            # MIPI panel driver source (copy of
+                                                              #   what 0002-*.patch injects)
+docs/tianma-tl060fvxs07-适配说明.md                            # why the vendor references don't
+                                                              # apply here + what to check on the board
 
 patch/u-boot/v2026.07/
   0000.patching_config.yaml                                   # REQUIRED: maps defconfig/,
@@ -69,6 +76,27 @@ devices, mounts and chroots into the target rootfs. Running it as the unprivileg
 The raw `.img` is ~3 GB and exceeds GitHub's 2 GB per-file limit, so the workflow
 always xz-compresses it. `BUILD_MINIMAL` defaults to `no` (full image). Releases are
 permanent, unlike artifacts which expire.
+
+### Optional: Tianma TL060FVXS07 MIPI-DSI screen (1080x2160, 4 lanes)
+
+See `docs/tianma-tl060fvxs07-适配说明.md`. Short version:
+
+The panel is **merged into the board DTS** (no runtime overlay needed).
+
+- **No pin conflict.** `GPIO1_A2` (backlight PWM, `pwm0m2_pins`), `GPIO0_B2` (LCD_RESX),
+  `GPIO1_B4` (touch IRQ) and `GPIO1_A1/A0` (touch I2C, `i2c2m4_xfer`) are all free;
+  `&pwm0` was already enabled in the board dts and merely had no consumer.
+- **The vendor references cannot be copied verbatim.** `compatible = "simple-panel-dsi"` and
+  `panel-init-sequence` are Rockchip-BSP-only; mainline has neither, and neither do
+  `route_dsi0` / `dsi0_in_vp2` / `dsi0_pwm`. Hence the dedicated driver in `0002-*.patch`
+  and the mainline VOP2-endpoint form (`&vp2` ↔ `&dsi0_in`, `&dsi0_out` ↔ panel).
+- **LCD_RESX is wired as `enable-gpios` `GPIO_ACTIVE_HIGH`.** If it turns out to be a reset
+  line, no rebuild is needed: add `panel-tianma-tl060fvxs07.gpio_is_reset=1` to
+  `extraargs` in `armbianEnv.txt`.
+- `0001-*.patch` only adds `DTC_FLAGS_rk3588-hz-evm-rk3588 := -@`, i.e. it keeps the door open
+  for runtime DT overlays later (mainline emits `/__symbols__` only for composite `-dtbs`).
+- **Touch is parked**: `sec,sec_ts` does not exist upstream, so `&i2c2` + `touchscreen@48`
+  stay `status = "disabled"` as a wiring record only.
 
 ## Rootfs cache reuse
 

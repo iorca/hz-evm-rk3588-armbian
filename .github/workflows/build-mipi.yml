@@ -1,0 +1,158 @@
+name: Build Armbian (HZ-EVM-RK3588 + MIPI TL060FVXS07)
+
+# Dedicated workflow for the MIPI panel work.
+#
+# It exists separately from build.yml so that
+#   * main            -> build.yml       -> tag armbian-<run>.<attempt>
+#   * mipi-tl060fvxs07 -> build-mipi.yml -> tag armbian-mipi-<run>.<attempt>
+# never fight over the same release tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Userspace release (noble / bookworm / trixie)"
+        required: false
+        default: "noble"
+      branch:
+        description: "Kernel branch (current / vendor)"
+        required: false
+        default: "current"
+      minimal:
+        description: "Build minimal CLI image (false = full image, published as .img.xz release asset)"
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [mipi-tl060fvxs07]
+    paths:
+      - "config/**"
+      - "patch/**"
+      - "drivers/**"
+      - ".github/workflows/build-mipi.yml"
+
+env:
+  # Pinned on purpose. The rootfs cache name embeds a hash of armbian/build's
+  # lib/functions/rootfs/{create-cache,rootfs-create}.sh plus the aggregated
+  # package-list hash; pinning keeps those stable so the rootfs tarball
+  # published by the rootfs repo stays reusable here.
+  # Must match Armbian-rootfs-dev's pin, or the cache ids will not line up.
+  ARMBIAN_BUILD_SHA: 04108a20e5de1c956425b3f5a2a7cba47ba829b8
+  # The rootfs is a board-independent arm64/noble/cli artifact, so it is built
+  # and published from its own repo rather than from here.
+  ROOTFS_REPO: iorca/Armbian-rootfs-dev
+  ROOTFS_TAG: armbian-rootfs-cache
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout board overlay
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+                       /usr/local/lib/android /usr/share/swift 2>/dev/null || true
+          sudo apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox \
+                       google* dotnet* powershell openjdk* moby* || true
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          df -h
+
+      - name: Checkout Armbian build framework (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: armbian/build
+          ref: ${{ env.ARMBIAN_BUILD_SHA }}
+          path: armbian-build
+          fetch-depth: 1
+
+      - name: Inject board files into the tree
+        run: |
+          cp -r config armbian-build/
+          cp -r patch armbian-build/
+
+      - name: Fetch prebuilt rootfs cache
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p armbian-build/cache/rootfs
+          if gh release download "${ROOTFS_TAG}" \
+               --repo "${ROOTFS_REPO}" \
+               --pattern '*.tar.zst' \
+               --dir armbian-build/cache/rootfs \
+               --clobber; then
+            echo "--- rootfs cache applied ---"
+            ls -lh armbian-build/cache/rootfs/
+          else
+            echo "no rootfs cache release yet - Armbian will build the rootfs from scratch"
+          fi
+
+      - name: Verify injected overlay
+        run: |
+          git -C armbian-build rev-parse HEAD
+          echo "--- kernel patches (MIPI panel must be there) ---"
+          find armbian-build/patch/kernel -type f || true
+          echo "--- board dt (must contain tianma / dsi0) ---"
+          grep -nE 'tianma|dsi0|mipidcphy0' armbian-build/patch/kernel/rk35xx-current/dt/rk3588-hz-evm-rk3588.dts | head -20
+
+      - name: Build image
+        working-directory: armbian-build
+        run: |
+          sudo -E ./compile.sh \
+            BOARD=hz-evm-rk3588 \
+            BRANCH=${{ github.event.inputs.branch || 'current' }} \
+            RELEASE=${{ github.event.inputs.release || 'noble' }} \
+            BUILD_DESKTOP=no \
+            BUILD_MINIMAL=${{ github.event.inputs.minimal == 'true' && 'yes' || 'no' }} \
+            KERNEL_CONFIGURE=no \
+            EXPERT=yes \
+            COMPRESS_OUTPUTIMAGE="sha,xz"
+
+      - name: Collect build artifacts
+        id: collect
+        run: |
+          ls -lh armbian-build/output/images/ || true
+          files=$(ls armbian-build/output/images/*.img.xz 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::error::No .img.xz produced - the build did not complete."
+            ls -lhR armbian-build/output/ || true
+            exit 1
+          fi
+          echo "found: $files"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: armbian-mipi-${{ github.run_number }}.${{ github.run_attempt }}
+          name: Armbian HZ-EVM-RK3588 MIPI (${{ github.run_number }})
+          body: |
+            Armbian image for HZ-EVM-RK3588 **with the Tianma TL060FVXS07 MIPI-DSI panel**
+            (branch `${{ github.event.inputs.branch || 'current' }}`,
+            release `${{ github.event.inputs.release || 'noble' }}`,
+            minimal `${{ github.event.inputs.minimal || 'false' }}`).
+
+            Changes vs. the `main` image:
+            - `0001-arm64-dts-rockchip-enable-DT-symbols-*.patch` (runtime DT overlay support)
+            - `0002-drm-panel-add-tianma-tl060fvxs07-*.patch` (panel driver)
+            - board DTS: DSI0 + PWM0 backlight; LCD_RESX = GPIO0_B2 as `enable-gpios` `GPIO_ACTIVE_HIGH`
+
+            If the panel stays black, try adding to `extraargs` in `/boot/armbianEnv.txt`:
+
+            ```
+            panel-tianma-tl060fvxs07.gpio_is_reset=1
+            ```
+
+            Touch is not functional yet (`sec,sec_ts` has no mainline driver).
+          files: |
+            armbian-build/output/images/*.img.xz
+            armbian-build/output/images/*.img.txt
+          fail_on_unmatched_files: true
+          prerelease: false
+          draft: false

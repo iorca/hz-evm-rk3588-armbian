@@ -1,0 +1,403 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * Tianma TL060FVXS07 6.0" 1080x2160 MIPI-DSI video mode panel driver
+ * (Samsung S6D6FT0 driver IC, 4 lanes, RGB888)
+ *
+ * No datasheet is available for this panel.  The power-up command sequence
+ * and the display timings below were taken from the community "mipi-hub"
+ * adaptation set for this exact panel (adapted on Radxa ROCK 5C, NanoPC-T6,
+ * KickPi K1, 泰山派 ... all on the Rockchip BSP kernel).  This driver is the
+ * mainline equivalent of those BSP-only description
+ *
+ *   compatible = "simple-panel-dsi" + panel-init-sequence = [...]
+ *
+ * which mainline deliberately does not implement (see
+ * Documentation/devicetree/bindings/display/panel/panel-simple-dsi.yaml:
+ * the compatible there is an enum of real panels, not a catch-all).
+ *
+ * Structure copied from drivers/gpu/drm/panel/panel-elida-kd35t133.c
+ * Copyright (C) 2020 Theobroma Systems Design und Consulting GmbH
+ */
+
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/regulator/consumer.h>
+
+#include <video/mipi_display.h>
+
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_panel.h>
+
+/*
+ * The panel uses a 0x9f / 0xf0 password pair to open its vendor registers,
+ * then two 60-byte gamma tables (0xea / 0xeb).
+ *
+ * Set to 1 to use the reduced sequence that several of the community
+ * adaptions report as sufficient (exit_sleep + display_on only).  Useful as
+ * a first debug step if the full sequence yields a blank panel.
+ */
+#define TL060FVXS07_SHORT_INIT_SEQ 0
+
+/* Password / vendor page */
+#define TL060FVXS07_PASSWORD_ON_A2	0x9f, 0xa5, 0xa5
+#define TL060FVXS07_PASSWORD_ON_F0	0xf0, 0x5a, 0x5a
+#define TL060FVXS07_PASSWORD_OFF_F0	0xf0, 0xa5, 0xa5
+#define TL060FVXS07_PASSWORD_OFF_9F	0x9f, 0x5a, 0x5a
+
+/*
+ * The baseboard wires LCD_RESX to GPIO0_B2 and nobody has the panel datasheet,
+ * so we do not know whether that line is an ENABLE (drive high, keep high) or a
+ * RESET (assert - hold - release).  Default to ENABLE; flip at runtime with
+ *
+ *   modprobe panel-tianma-tl060fvxs07 gpio_is_reset=1
+ *   (or, if built in, add panel-tianma-tl060fvxs07.gpio_is_reset=1 to cmdline)
+ *
+ * instead of rebuilding.
+ */
+static bool gpio_is_reset;
+module_param(gpio_is_reset, bool, 0644);
+MODULE_PARM_DESC(gpio_is_reset,
+		 "Treat the enable GPIO as a reset line: assert-hold-release "
+		 "instead of driving it high and keeping it there");
+
+struct tl060fvxs07 {
+	struct device *dev;
+	struct drm_panel panel;
+	struct gpio_desc *reset_gpio;
+	struct gpio_desc *enable_gpio;
+	struct regulator *vdd;
+	struct regulator *iovcc;
+	enum drm_panel_orientation orientation;
+};
+
+static inline struct tl060fvxs07 *panel_to_ctx(struct drm_panel *panel)
+{
+	return container_of(panel, struct tl060fvxs07, panel);
+}
+
+/*
+ * 60-byte gamma table used for both 0xea and 0xeb: 3 identical 20-byte blocks.
+ */
+#define TL060FVXS07_GAMMA_BLOCK \
+	0x00, 0x73, 0x11, 0x1b, 0x23, 0x2a, 0x40, 0x59, 0x70, 0x6e, \
+	0xa1, 0x86, 0x92, 0x9f, 0xab, 0xb8, 0x4d, 0x59, 0x65, 0x7f
+
+/*
+ * Full bring-up sequence, translated 1:1 from the community reference DT
+ * (Nanopi T6 / Radxa ROCK 5C) whose byte stream is:
+ *
+ *   39 00 03 9F A5 A5        unlock level-2
+ *   05 78 01 11              exit sleep mode, wait 120 ms
+ *   15 00 02 55 10
+ *   39 00 03 F0 5A 5A        select vendor page
+ *   15 00 02 73 94
+ *   39 00 3D EA 00 73 ...    gamma table (60 bytes)
+ *   39 00 3D EB 00 73 ...    gamma table (60 bytes)
+ *   39 00 03 F0 A5 A5        leave vendor page
+ *   05 09 01 29              display on, wait 9 ms
+ *   39 00 03 9F 5A 5A        re-lock
+ */
+static void tl060fvxs07_init_sequence(struct mipi_dsi_multi_context *dsi_ctx)
+{
+	if (TL060FVXS07_SHORT_INIT_SEQ) {
+		mipi_dsi_dcs_exit_sleep_mode_multi(dsi_ctx);
+		mipi_dsi_msleep(dsi_ctx, 120);
+		mipi_dsi_dcs_set_display_on_multi(dsi_ctx);
+		mipi_dsi_msleep(dsi_ctx, 10);
+		return;
+	}
+
+	/* unlock level-2 register access */
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, TL060FVXS07_PASSWORD_ON_A2);
+
+	mipi_dsi_dcs_exit_sleep_mode_multi(dsi_ctx);
+	mipi_dsi_msleep(dsi_ctx, 120);
+
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x55, 0x10);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, TL060FVXS07_PASSWORD_ON_F0);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x73, 0x94);
+
+	/* two identical gamma tables */
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xea,
+				     TL060FVXS07_GAMMA_BLOCK,
+				     TL060FVXS07_GAMMA_BLOCK,
+				     TL060FVXS07_GAMMA_BLOCK);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xeb,
+				     TL060FVXS07_GAMMA_BLOCK,
+				     TL060FVXS07_GAMMA_BLOCK,
+				     TL060FVXS07_GAMMA_BLOCK);
+
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, TL060FVXS07_PASSWORD_OFF_F0);
+
+	mipi_dsi_dcs_set_display_on_multi(dsi_ctx);
+	mipi_dsi_msleep(dsi_ctx, 35);
+
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, TL060FVXS07_PASSWORD_OFF_9F);
+}
+
+/*
+ * gpiod_set_value() takes the LOGICAL value: 1 == asserted, whatever
+ * GPIO_ACTIVE_HIGH / GPIO_ACTIVE_LOW says in DT.
+ *
+ * pulse == true  -> assert, hold, release   (reset semantics)
+ * pulse == false -> assert and keep it      (enable semantics)
+ */
+static void tl060fvxs07_drive_gpio(struct gpio_desc *gpiod, bool pulse)
+{
+	if (!gpiod)
+		return;
+
+	if (pulse) {
+		gpiod_set_value_cansleep(gpiod, 1);
+		msleep(120);
+		gpiod_set_value_cansleep(gpiod, 0);
+		msleep(120);
+	} else {
+		gpiod_set_value_cansleep(gpiod, 1);
+		msleep(120);
+	}
+}
+
+static int tl060fvxs07_unprepare(struct drm_panel *panel)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+
+	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 80);
+	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 120);
+	if (dsi_ctx.accum_err)
+		return dsi_ctx.accum_err;
+
+	if (ctx->reset_gpio) {
+		/* hold the panel in reset (logical 1 == asserted, whatever the
+		 * polarity in DT is) */
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		msleep(50);
+	}
+
+	if (ctx->enable_gpio) {
+		/* drop the enable line */
+		gpiod_set_value_cansleep(ctx->enable_gpio, 0);
+		msleep(50);
+	}
+
+	regulator_disable(ctx->iovcc);
+	regulator_disable(ctx->vdd);
+
+	return 0;
+}
+
+static int tl060fvxs07_prepare(struct drm_panel *panel)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+
+	if (ctx->vdd) {
+		dsi_ctx.accum_err = regulator_enable(ctx->vdd);
+		if (dsi_ctx.accum_err) {
+			dev_err(ctx->dev, "failed to enable vdd: %d\n",
+				dsi_ctx.accum_err);
+			return dsi_ctx.accum_err;
+		}
+	}
+
+	if (ctx->iovcc) {
+		dsi_ctx.accum_err = regulator_enable(ctx->iovcc);
+		if (dsi_ctx.accum_err) {
+			dev_err(ctx->dev, "failed to enable iovcc: %d\n",
+				dsi_ctx.accum_err);
+			goto disable_vdd;
+		}
+	}
+
+	msleep(20);
+
+	/* see tl060fvxs07_drive_gpio() and the gpio_is_reset module param */
+	tl060fvxs07_drive_gpio(ctx->enable_gpio, gpio_is_reset);
+	tl060fvxs07_drive_gpio(ctx->reset_gpio, true);
+
+	tl060fvxs07_init_sequence(&dsi_ctx);
+	if (!dsi_ctx.accum_err)
+		dev_dbg(ctx->dev, "init sequence sent\n");
+
+	if (dsi_ctx.accum_err)
+		goto disable_iovcc;
+
+	return 0;
+
+disable_iovcc:
+	if (ctx->iovcc)
+		regulator_disable(ctx->iovcc);
+disable_vdd:
+	if (ctx->vdd)
+		regulator_disable(ctx->vdd);
+	return dsi_ctx.accum_err;
+}
+
+static const struct drm_display_mode tl060fvxs07_default_mode = {
+	.clock		= 154000,	/* kHz */
+
+	.hdisplay	= 1080,
+	.hsync_start	= 1080 + 4,	/* hback-porch */
+	.hsync_end	= 1080 + 4 + 4,	/* hsync-len   */
+	.htotal		= 1080 + 4 + 4 + 92,
+
+	.vdisplay	= 2160,
+	.vsync_start	= 2160 + 6,	/* vback-porch */
+	.vsync_end	= 2160 + 6 + 2,	/* vsync-len   */
+	.vtotal		= 2160 + 6 + 2 + 8,
+
+	.width_mm	= 74,
+	.height_mm	= 133,
+};
+
+static int tl060fvxs07_get_modes(struct drm_panel *panel,
+				 struct drm_connector *connector)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+	struct drm_display_mode *mode;
+
+	mode = drm_mode_duplicate(connector->dev, &tl060fvxs07_default_mode);
+	if (!mode) {
+		dev_err(ctx->dev, "failed to add mode %ux%u@%u\n",
+			tl060fvxs07_default_mode.hdisplay,
+			tl060fvxs07_default_mode.vdisplay,
+			drm_mode_vrefresh(&tl060fvxs07_default_mode));
+		return -ENOMEM;
+	}
+
+	drm_mode_set_name(mode);
+
+	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
+	connector->display_info.width_mm = mode->width_mm;
+	connector->display_info.height_mm = mode->height_mm;
+	drm_mode_probed_add(connector, mode);
+
+	return 1;
+}
+
+static enum drm_panel_orientation tl060fvxs07_get_orientation(struct drm_panel *panel)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+
+	return ctx->orientation;
+}
+
+static const struct drm_panel_funcs tl060fvxs07_funcs = {
+	.prepare	= tl060fvxs07_prepare,
+	.unprepare	= tl060fvxs07_unprepare,
+	.get_modes	= tl060fvxs07_get_modes,
+	.get_orientation = tl060fvxs07_get_orientation,
+};
+
+static int tl060fvxs07_probe(struct mipi_dsi_device *dsi)
+{
+	struct device *dev = &dsi->dev;
+	struct tl060fvxs07 *ctx;
+	int ret;
+
+	ctx = devm_drm_panel_alloc(dev, struct tl060fvxs07, panel,
+				   &tl060fvxs07_funcs, DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
+
+	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
+				     "cannot get reset gpio\n");
+
+	ctx->enable_gpio = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
+	if (IS_ERR(ctx->enable_gpio))
+		return dev_err_probe(dev, PTR_ERR(ctx->enable_gpio),
+				     "cannot get enable gpio\n");
+
+	if (!ctx->reset_gpio && !ctx->enable_gpio)
+		dev_warn(dev, "neither reset-gpios nor enable-gpios: panel may stay blank\n");
+
+	/* Both supplies are optional: several carrier boards hard-wire the
+	 * panel rails, so only describe them when the DT actually provides one.
+	 */
+	ctx->vdd = devm_regulator_get_optional(dev, "vdd");
+	if (IS_ERR(ctx->vdd)) {
+		ret = PTR_ERR(ctx->vdd);
+		if (ret != -ENODEV)
+			return dev_err_probe(dev, ret, "failed to get vdd supply\n");
+		ctx->vdd = NULL;
+	}
+
+	ctx->iovcc = devm_regulator_get_optional(dev, "iovcc");
+	if (IS_ERR(ctx->iovcc)) {
+		ret = PTR_ERR(ctx->iovcc);
+		if (ret != -ENODEV)
+			return dev_err_probe(dev, ret, "failed to get iovcc supply\n");
+		ctx->iovcc = NULL;
+	}
+
+	ret = of_drm_get_panel_orientation(dev->of_node, &ctx->orientation);
+	if (ret < 0)
+		return dev_err_probe(dev, ret, "failed to get orientation\n");
+
+	ctx->dev = dev;
+	mipi_dsi_set_drvdata(dsi, ctx);
+
+	dsi->lanes = 4;
+	dsi->format = MIPI_DSI_FMT_RGB888;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
+			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET;
+
+	ret = drm_panel_of_backlight(&ctx->panel);
+	if (ret)
+		return ret;
+
+	drm_panel_add(&ctx->panel);
+
+	ret = mipi_dsi_attach(dsi);
+	if (ret < 0) {
+		drm_panel_remove(&ctx->panel);
+		return dev_err_probe(dev, ret, "mipi_dsi_attach failed\n");
+	}
+
+	return 0;
+}
+
+static void tl060fvxs07_remove(struct mipi_dsi_device *dsi)
+{
+	struct tl060fvxs07 *ctx = mipi_dsi_get_drvdata(dsi);
+	int ret;
+
+	if (!ctx)
+		return;
+
+	ret = mipi_dsi_detach(dsi);
+	if (ret < 0)
+		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", ret);
+
+	drm_panel_remove(&ctx->panel);
+}
+
+static const struct of_device_id tl060fvxs07_of_match[] = {
+	{ .compatible = "tianma,tl060fvxs07" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, tl060fvxs07_of_match);
+
+static struct mipi_dsi_driver tl060fvxs07_driver = {
+	.driver = {
+		.name = "panel-tianma-tl060fvxs07",
+		.of_match_table = tl060fvxs07_of_match,
+	},
+	.probe	= tl060fvxs07_probe,
+	.remove	= tl060fvxs07_remove,
+};
+module_mipi_dsi_driver(tl060fvxs07_driver);
+
+MODULE_AUTHOR("HZ-EVM-RK3588 Armbian board overlay");
+MODULE_DESCRIPTION("DRM driver for Tianma TL060FVXS07 MIPI DSI panel");
+MODULE_LICENSE("GPL v2");

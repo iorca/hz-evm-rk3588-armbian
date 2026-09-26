@@ -9,13 +9,17 @@
  *
  * Cameras (i2c4 + 4xIMX415 + rkcif/rkisp) omitted — mainline has no
  * rockchip-private rkcif/rkisp nodes; per board owner's request.
- * MIPI DSI panels not included either.
+ *
+ * MIPI DSI0: 天马 TL060FVXS07 (1080x2160, 4 lane) 已并入见文件末尾 "MIPI DSI0"
+ * 段。触摸（I2C2 @ GPIO1_A0/A1 + IRQ GPIO1_B4）**暂且搁置**：它的 sec,sec_ts
+ * 驱动主线不存在，节点保留为 disabled 只作接线记录。
  */
 
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/pinctrl/rockchip.h>
 #include <dt-bindings/soc/rockchip,vop2.h>
 #include <dt-bindings/usb/pd.h>
@@ -156,6 +160,35 @@
 				remote-endpoint = <&hdmi1_out_con>;
 			};
 		};
+	};
+
+	/* ===== MIPI DSI0: 天马 TL060FVXS07 (6.0" 1080x2160, 4 lane, RGB888) =====
+	 * 背光走 PWM0_M2 = GPIO1_A2（下面 &pwm0 早已 status=okay，这里只是给它
+	 * 一个 consumer）。
+	 */
+	tianma_bl: backlight-tianma {
+		compatible = "pwm-backlight";
+		pwms = <&pwm0 0 25000 0>;	/* 25 kHz */
+		brightness-levels = <
+			  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+			 16  17  18  19  20  21  22  23  24  25  26  27  28  29  30  31
+			 32  33  34  35  36  37  38  39  40  41  42  43  44  45  46  47
+			 48  49  50  51  52  53  54  55  56  57  58  59  60  61  62  63
+			 64  65  66  67  68  69  70  71  72  73  74  75  76  77  78  79
+			 80  81  82  83  84  85  86  87  88  89  90  91  92  93  94  95
+			 96  97  98  99 100 101 102 103 104 105 106 107 108 109 110 111
+			112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127
+			128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143
+			144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159
+			160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175
+			176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191
+			192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207
+			208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223
+			224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239
+			240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255
+		>;
+		default-brightness-level = <200>;
+		status = "okay";
 	};
 };
 
@@ -439,6 +472,43 @@
 	};
 };
 
+/* ===== 触摸屏（天马 TL060FVXS07 自带，Samsung "6FT0"）=====
+ *
+ * ★★ 搁置中 ★★
+ * 接线：I2C2_SCL/SDA = GPIO1_A1/A0（`i2c2m4_xfer`），TP_INT = GPIO1_B4。
+ * IO 电平域与触摸芯片上拉一致，已确认。
+ *
+ * 卡点：这颗 IC 的驱动是 "sec,sec_ts"（参考包
+ * TL060FVXS07/泰山派/my_sec_ts/），**主线没有**，且它针对 5.10/6.1 BSP 写的，
+ * 直接打到 6.18 编译不过。必须移植（建议砍掉 fw 升级/自检，只留 probe + input
+ * 上报）。
+ *
+ * 节点先留着当接线记录，status = "disabled" 所以不会去抢占 GPIO1_A0/A1/B4。
+ * 移植好驱动后：把 status 改成 "okay"，并打开下面 tianma-touch 的 pinctrl。
+ */
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2m4_xfer>;		/* GPIO1_A1 scl / GPIO1_A0 sda */
+	clock-frequency = <400000>;
+	status = "disabled";
+
+	tianma_touch: touchscreen@48 {
+		compatible = "sec,sec_ts";
+		reg = <0x48>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&tianma_tp_int>;
+
+		interrupt-parent = <&gpio1>;
+		interrupts = <RK_PB4 IRQ_TYPE_LEVEL_LOW>;	/* MIPI_TP_INT */
+
+		sec,irq_gpio = <&gpio1 RK_PB4 GPIO_ACTIVE_LOW>;
+		sec,max_coords = <1080>, <2160>;
+
+		status = "disabled";
+	};
+};
+
 &i2s0_8ch {
 	status = "okay";
 	pinctrl-names = "default";
@@ -652,6 +722,84 @@
 	};
 };
 
+/* ===== MIPI DSI0 (天马 TL060FVXS07) =====
+ *
+ * ★ 这里是**主线**写法，不是参考案例里那套。区别在于：
+ *   - 面板驱动用 "tianma,tl060fvxs07"（0002-*.patch 新加的），
+ *     不是 BSP 专有的 "simple-panel-dsi" —— 主线没有后者。
+ *   - VOP 路由用 VOP2 的 endpoint 图（&vp2 ↔ &dsi0_in），
+ *     不是 BSP 的 &route_dsi0 / &dsi0_in_vp2。
+ *   - 背光是自建的 pwm-backlight 节点 + &pwm0，不是 BSP 的 &dsi0_pwm。
+ *   - dsi,lanes / format / mode_flags 全部写死在驱动 probe 里，因为主线
+ *     根本没有给 dts 用的 dt-bindings/display/mipi-dsi.h。
+ */
+
+&mipidcphy0 {
+	status = "okay";
+};
+
+&dsi0 {
+	status = "okay";
+	/* rk3588-base.dtsi 里没写，但 panel 子节点有 "reg = <0>"，必须补 */
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	tianma_panel: panel@0 {
+		compatible = "tianma,tl060fvxs07";
+		reg = <0>;
+
+		backlight = <&tianma_bl>;
+
+		/* LCD_RESX = GPIO0_B2。按"高有效"处理 —— 用 enable-gpios，
+		 * 即驱动把它拉高并**保持**高。
+		 * 如果实际是复位线（需要 assert→hold→release 的脉冲），两种改法：
+		 *   1) 不重编：modprobe panel-tianma-tl060fvxs07 gpio_is_reset=1
+		 *      （编进内核时：cmdline 加 panel-tianma-tl060fvxs07.gpio_is_reset=1）
+		 *   2) 改这里：把 enable-gpios 换成 reset-gpios（极性不变）
+		 */
+		enable-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&tianma_lcd_en>;
+
+		/* 屏原生是竖屏 1080x2160；要横屏控制台就打开下面这行
+		 * （驱动走 of_drm_get_panel_orientation）。*/
+		/* rotation = <90>; */
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				panel_in_dsi0: endpoint {
+					remote-endpoint = <&dsi0_out_panel>;
+				};
+			};
+		};
+	};
+};
+
+/* dsi0_out = rk3588-base.dtsi 里 dsi0 的 ports/port@1 */
+&dsi0_out {
+	dsi0_out_panel: endpoint {
+		remote-endpoint = <&panel_in_dsi0>;
+	};
+};
+
+&dsi0_in {
+	dsi0_in_vp2: endpoint {
+		remote-endpoint = <&vp2_out_dsi0>;
+	};
+};
+
+&vp2 {
+	vp2_out_dsi0: endpoint@ROCKCHIP_VOP2_EP_MIPI0 {
+		reg = <ROCKCHIP_VOP2_EP_MIPI0>;
+		remote-endpoint = <&dsi0_in_vp2>;
+	};
+};
+
 /* ===== HDMI RX ===== */
 &hdmi_receiver_cma { status = "okay"; };
 &i2s7_8ch { status = "okay"; };
@@ -764,6 +912,23 @@
 	headphone {
 		hp_det: hp-det {
 			rockchip,pins = <0 RK_PD3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	/* MIPI 屏 LCD_RESX = GPIO0_B2，高有效使能。
+	 * 下拉是为了在上电到驱动 probe 之间保持确定的"关"态；
+	 * 如果你的底板外面已经有上拉、或者需要开机即亮，改成 &pcfg_pull_up。*/
+	tianma-lcd {
+		tianma_lcd_en: tianma-lcd-en {
+			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_down>;
+		};
+	};
+
+	/* 触摸屏中断 GPIO1_B4（触摸搁置中，见上面 &i2c2 段）。
+	 * &i2c2 是 disabled，所以这组不会被真正应用。*/
+	tianma-touch {
+		tianma_tp_int: tianma-tp-int {
+			rockchip,pins = <1 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
 };

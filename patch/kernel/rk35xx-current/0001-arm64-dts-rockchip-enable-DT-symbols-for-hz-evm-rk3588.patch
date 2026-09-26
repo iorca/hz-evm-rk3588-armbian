@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Armbian board overlay <nobody@example.com>
+Date: Sat, 26 Sep 2026 23:00:00 +0800
+Subject: [PATCH] arm64: dts: rockchip: enable DT symbols for hz-evm-rk3588
+
+U-Boot applies runtime DT overlays with "fdt apply", which resolves the
+overlay's /__fixups__ entries against the base DTB's /__symbols__ node.
+
+Since
+
+  9f1de96cb2c8 ("kbuild: add infrastructure to build userspace programs")
+
+mainline only passes -@ to base DTB of composite DTB (see
+scripts/Makefile.dtbs, "Set -@ if the target is a base DTB that overlay is
+applied onto").  A plain "%.dtb: %.dts" target therefore carries NO
+__symbols__ and every overlay reference such as &pwm0 fails to resolve:
+
+  failed on fdt_overlay_apply(): FDT_ERR_NOTFOUND / "No such node or property"
+
+Restore symbols for this board only, exactly like upstream does for the
+BananaPi DTBs (arch/arm64/boot/dts/mediatek/Makefile):
+
+  DTC_FLAGS_mt7986a-bananapi-bpi-r3 := -@
+
+Needed by the MIPI-DSI panel overlay; harmless otherwise (a few KB of extra
+DTB and a slightly slower boot).
+
+Signed-off-by: Armbian board overlay <nobody@example.com>
+---
+ arch/arm64/boot/dts/rockchip/Makefile | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
+--- a/arch/arm64/boot/dts/rockchip/Makefile
++++ b/arch/arm64/boot/dts/rockchip/Makefile
+@@ -1,4 +1,9 @@
+ # SPDX-License-Identifier: GPL-2.0
++# Enable DT symbols (-@) for this board so that U-Boot's "fdt apply" can
++# resolve the &label references carried by runtime DT overlays.
++# Same mechanism as upstream mediatek mt7986a-bananapi-bpi-r3 / mt8395-radxa-nio-12l.
++DTC_FLAGS_rk3588-hz-evm-rk3588 := -@
++
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += px30-cobra-ltk050h3146w-a2.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += px30-cobra-ltk050h3146w.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += px30-cobra-ltk050h3148w.dtb
+--
+2.45.0
+
