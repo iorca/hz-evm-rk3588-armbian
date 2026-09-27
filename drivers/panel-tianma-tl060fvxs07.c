@@ -71,6 +71,20 @@ module_param(short_init_seq, bool, 0644);
 MODULE_PARM_DESC(short_init_seq,
 		 "Use the reduced init sequence (exit sleep + display on only)");
 
+/*
+ * Debug aid: after the init sequence, read back DCS 0x04 (get display id)
+ * and log it. If the panel answers, the DSI link and the panel silicon are
+ * alive and the problem is purely the command sequence / timings. If it does
+ * not answer, the panel is not responding at all - look at power, wiring and
+ * the reset line instead of fiddling with registers.
+ *
+ * The result is informational only: any error it raises is rolled back so
+ * that enabling this never breaks an otherwise working panel.
+ */
+static bool read_id;
+module_param(read_id, bool, 0644);
+MODULE_PARM_DESC(read_id, "Log a DCS 0x04 read-back after the init sequence");
+
 struct tl060fvxs07 {
 	struct device *dev;
 	struct drm_panel panel;
@@ -195,8 +209,17 @@ static int tl060fvxs07_unprepare(struct drm_panel *panel)
 		msleep(50);
 	}
 
-	regulator_disable(ctx->iovcc);
-	regulator_disable(ctx->vdd);
+	/*
+	 * NULL-safe: both supplies are optional (devm_regulator_get_optional)
+	 * and are NULL when the DT describes none - which is the normal case
+	 * here. regulator_disable(NULL) is an instant oops, and it happens on
+	 * every reboot/shutdown via drm_panel_unprepare() ->
+	 * panel_bridge_atomic_post_disable().
+	 */
+	if (ctx->iovcc)
+		regulator_disable(ctx->iovcc);
+	if (ctx->vdd)
+		regulator_disable(ctx->vdd);
 
 	return 0;
 }
@@ -247,6 +270,18 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 	dev_info(ctx->dev, "panel prepared (%s seq, gpio=%s)\n",
 		 short_init_seq ? "short" : "full",
 		 gpio_is_reset ? "reset" : "enable");
+
+	if (read_id) {
+		int saved = dsi_ctx.accum_err;
+		u8 id[3] = { 0, 0, 0 };
+
+		mipi_dsi_dcs_read_multi(&dsi_ctx, MIPI_DCS_GET_DISPLAY_ID, id,
+					sizeof(id));
+		dev_info(ctx->dev, "DCS 0x04 readback: %02x %02x %02x (rc=%d)\n",
+			 id[0], id[1], id[2], dsi_ctx.accum_err);
+		/* informational only - do not let a failed probe disable the panel */
+		dsi_ctx.accum_err = saved;
+	}
 
 	return 0;
 
