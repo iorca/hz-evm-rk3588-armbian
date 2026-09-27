@@ -113,6 +113,29 @@ static int timing;
 module_param(timing, int, 0644);
 MODULE_PARM_DESC(timing, "Display timing variant: 0=nanopi, 1=radxa, 2=qcom");
 
+/*
+ * Logic-analyser finding: the SoC drives D0 with a textbook LPDT waveform
+ * (~100ns/bit, ~180 bytes of init), but CLKP/CLKN sit at a constant low -
+ * swapping the probe groups proved it is not the probes: the clock lane
+ * really carries nothing.
+ *
+ * D-PHY clock-lane LP-00 == ULPS, and neither
+ *   drivers/phy/rockchip/phy-rockchip-samsung-dcphy.c   (T_ULPS_EXIT, unused)
+ *   drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi2.c      (TO_LPTXULPS, unused)
+ * has any ULPS exit handling, so nothing ever brings the clock lane back.
+ * With no escape clock on the clock lane the panel cannot decode a single
+ * LPDT packet: no ACK, no read response (-110), never leaves sleep.
+ *
+ * MIPI_DSI_CLOCK_NON_CONTINUOUS lets the host drop the clock lane out of
+ * HS/ULPS between bursts, which is the closest runtime knob to that. Try:
+ *
+ *   panel-tianma-tl060fvxs07.noncont_clock=1
+ */
+static bool noncont_clock;
+module_param(noncont_clock, bool, 0644);
+MODULE_PARM_DESC(noncont_clock,
+		 "Set MIPI_DSI_CLOCK_NON_CONTINUOUS - lets the clock lane leave HS/ULPS");
+
 struct tl060fvxs07 {
 	struct device *dev;
 	struct drm_panel panel;
@@ -513,6 +536,9 @@ static int tl060fvxs07_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET;
+
+	if (noncont_clock)
+		dsi->mode_flags |= MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
