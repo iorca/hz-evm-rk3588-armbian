@@ -227,16 +227,29 @@ $ for d in /sys/class/drm/card0-*; do echo "$d $(cat $d/status) $(cat $d/enabled
 剩下的只是文本控制台落到了先枚举到的 HDMI-A-1 上（`Console: switching to colour
 frame buffer device 128x48` —— 128x48×8x16 = 1024x768，不是我们的屏）。
 
-修法（**不用重编**），在 `/boot/armbianEnv.txt` 的 `extraargs` 里禁用 HDMI 输出：
+修法（**不用重编**），改 `/boot/armbianEnv.txt`，两个坑都别踩：
 
 ```
-extraargs=... video=HDMI-A-1:d video=HDMI-A-2:d
+console=both
+extraargs=cma=256M video=HDMI-A-1:d video=HDMI-A-2:d
 ```
 
-`video=<connector>:d` 是 `drm_fb_helper` 的标准语法（`d` = disable）。
-fb helper 只剩 DSI-1 可用，console 自然就过去了。想恢复 HDMI 就把这两个参数摘掉重启。
+**坑 1 —— `extraargs` 只能有一行。**
+`boot-rk35xx.cmd` 里是 `env import -t`，同一个 key 出现两次**后面的整行覆盖前面的**，
+写两条 `extraargs=` 会把前面那条的内容（比如 `cma=256M`）整个丢掉。必须合并成一行。
 
-要更彻底就在 dts 里把 `&hdmi0` / `&hdmi1` 改成 `status = "disabled"`。
+**坑 2 —— `console=serial` 时内核没有 `console=tty1`。**
+启动脚本：`console=serial` → `consoleargs="console=ttyS2,1500000"`；
+`console=both` → `"console=ttyS2,1500000 console=tty1"`。
+只有 serial 的话，就算 fb0 落到 DSI-1 上，也没有任何东西往帧缓冲写，
+屏还是黑的。要 `console=both`。
+
+`video=<connector>:d` 是 `drm_fb_helper` 的标准语法（`d` = disable，
+名字跟 `/sys/class/drm/card0-HDMI-A-1` 里的后缀一致）。
+禁掉两个 HDMI 后 fb helper 只剩 DSI-1 可用，console 自然过去。
+想恢复 HDMI 就把 `video=` 那两个参数摘掉重启。
+
+更彻底的做法：dts 里把 `&hdmi0` / `&hdmi1` 改成 `status = "disabled"`。
 
 ### 1. 真正的故障排查
 
