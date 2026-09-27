@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * 快速验证用 overlay：把 LCD_RESX 从"一直拉高的使能"改成"低有效复位脉冲"。
+ *
+ * 为什么要改：
+ *   驱动里 enable-gpios 那条路径只做 "assert 后保持"，**没有释放**，
+ *   也就是发 MIPI 初始化指令之前屏根本没被复位过。DSI 命令照样发出去
+ *   （不报错、connector 也 enabled），但屏内部状态没复位，0x9F 解锁吃不进去
+ *   → 背光亮、无画面。
+ *
+ *   reset-gpios + GPIO_ACTIVE_LOW 的路径是：
+ *       assert(物理 LOW) 120ms → release(物理 HIGH) 120ms → 发初始化指令
+ *   即标准的"先复位、再发指令"。
+ *
+ *   而且这个写法对"高有效使能"的硬件同样成立（LOW 关一下、HIGH 打开），
+ *   所以不用再猜底板到底是哪种。
+ *
+ * 用法（板子上）：
+ *   dtc -@ -I dts -O dtb -o tianma-resetfix.dtbo tianma-resetfix.dts
+ *   cp tianma-resetfix.dtbo /boot/overlay-user/
+ *   echo "user_overlays=tianma-resetfix" >> /boot/armbianEnv.txt
+ *   reboot
+ *
+ * 验证：
+ *   dmesg | grep -i tianma
+ *   for d in /sys/class/drm/card0-*; do echo "$d $(cat $d/enabled)"; done
+ *
+ * 验通了就把这个改动并进板级 dts（已经改好了），不用再带 overlay。
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+&tianma_panel {
+	/delete-property/ enable-gpios;
+	reset-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
+};

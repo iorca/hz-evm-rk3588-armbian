@@ -750,14 +750,18 @@
 
 		backlight = <&tianma_bl>;
 
-		/* LCD_RESX = GPIO0_B2。按"高有效"处理 —— 用 enable-gpios，
-		 * 即驱动把它拉高并**保持**高。
-		 * 如果实际是复位线（需要 assert→hold→release 的脉冲），两种改法：
-		 *   1) 不重编：modprobe panel-tianma-tl060fvxs07 gpio_is_reset=1
-		 *      （编进内核时：cmdline 加 panel-tianma-tl060fvxs07.gpio_is_reset=1）
-		 *   2) 改这里：把 enable-gpios 换成 reset-gpios（极性不变）
+		/* LCD_RESX = GPIO0_B2。用**低有效复位线**，驱动会：
+		 *   assert(物理低) 120ms → release(物理高) 120ms → 才发初始化指令
+		 *
+		 * ★ 关键：发 MIPI 初始化指令之前必须先给一次复位脉冲。
+		 *   之前写成 enable-gpios + GPIO_ACTIVE_HIGH（"拉高并保持"）是错的 ——
+		 *   那条路径只 assert 不释放，屏从没被复位过，DSI 命令照样发出去也不报错
+		 *   （connector 照样 enabled），但 0x9F 解锁吃不进去，表现为背光亮/无画面。
+		 *
+		 *   低有效这个写法对"高有效使能"的硬件同样成立（低关一下、高打开），
+		 *   所以不用再猜底板到底是复位还是使能。
 		 */
-		enable-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&tianma_lcd_en>;
@@ -915,9 +919,9 @@
 		};
 	};
 
-	/* MIPI 屏 LCD_RESX = GPIO0_B2，高有效使能。
-	 * 下拉是为了在上电到驱动 probe 之间保持确定的"关"态；
-	 * 如果你的底板外面已经有上拉、或者需要开机即亮，改成 &pcfg_pull_up。*/
+	/* MIPI 屏 LCD_RESX = GPIO0_B2，低有效复位。
+	 * 下拉 = 上电到驱动 probe 之间一直把屏按在复位里，正是想要的。
+	 * 如果你的底板外面已经有上拉导致屏过早脱离复位，再改。*/
 	tianma-lcd {
 		tianma_lcd_en: tianma-lcd-en {
 			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_down>;

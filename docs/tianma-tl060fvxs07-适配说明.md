@@ -251,7 +251,46 @@ extraargs=cma=256M video=HDMI-A-1:d video=HDMI-A-2:d
 
 更彻底的做法：dts 里把 `&hdmi0` / `&hdmi1` 改成 `status = "disabled"`。
 
-### 1. 真正的故障排查
+### 1. 发初始化指令之前必须先复位（这条最容易漏）
+
+**症状**：`card0-DSI-1` 是 `connected enabled 1080x2160`，fbcon 也已经是 135x135（=1080x2160），
+`dmesg` 里**没有任何报错**，但屏就是黑的。
+
+**原因**：发 MIPI 命令之前没有给屏一次复位脉冲。屏内部没被复位，
+0x9F 解锁/gamma 那套命令照样发出去、DSI 层也照样返回成功（所以不报错、
+connector 也 enabled），但寄存器根本没写进去。
+
+驱动里两条路径的差别：
+
+| DT 属性 | 驱动行为 | 对不对 |
+|---|---|---|
+| `enable-gpios` | `assert` 后**保持**，不释放 | ✗ 没有复位脉冲 |
+| `reset-gpios` | `assert(120ms)` → `release` → **然后才发指令** | ✓ 标准流程 |
+
+正确写法（**低有效**）：
+
+```dts
+reset-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_LOW>;
+```
+
+物理时序：`LOW 120ms` → `HIGH 120ms` → 发初始化指令。
+这个写法对"高有效使能"的硬件也成立（低关一下、高打开），所以不用纠结底板到底是哪种。
+pinctrl 保持 `&pcfg_pull_down`，上电到 probe 之间把屏按在复位里，正好。
+
+**不用等构建就能验**（base dtb 已有 `__symbols__`），见
+`dt-overlays/tianma-resetfix.dts`：
+
+```bash
+dtc -@ -I dts -O dtb -o tianma-resetfix.dtbo tianma-resetfix.dts
+cp tianma-resetfix.dtbo /boot/overlay-user/
+echo "user_overlays=tianma-resetfix" >> /boot/armbianEnv.txt
+reboot
+```
+
+> 别试 `gpio_is_reset=1` 来"模拟"：当前 dtb 若是 `GPIO_ACTIVE_HIGH`，那个脉冲结尾停在
+> **低**电平，等于把屏一直按在复位里，只会更黑。
+
+### 2. 其它故障排查
 
 1. panel 压根没 probe（dmesg 无 `tianma`）→ 检查三个 CONFIG
 2. probe 成功但黑屏 → ①加 `panel-tianma-tl060fvxs07.gpio_is_reset=1`（第 4 节）
