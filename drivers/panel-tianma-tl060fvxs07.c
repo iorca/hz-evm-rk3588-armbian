@@ -93,6 +93,7 @@ struct tl060fvxs07 {
 	struct regulator *vdd;
 	struct regulator *iovcc;
 	enum drm_panel_orientation orientation;
+	bool seq_ok;
 };
 
 static inline struct tl060fvxs07 *panel_to_ctx(struct drm_panel *panel)
@@ -254,19 +255,33 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 	tl060fvxs07_drive_gpio(ctx->enable_gpio, gpio_is_reset);
 	tl060fvxs07_drive_gpio(ctx->reset_gpio, true);
 
+	/*
+	 * NOTE ON ORDERING: with the mainline dw-mipi-dsi2 + panel-bridge
+	 * setup, drm_panel_prepare() runs *before* the DSI host has powered
+	 * its PHY:
+	 *
+	 *   drm_atomic_bridge_chain_pre_enable()  walks the chain in REVERSE
+	 *     -> panel_bridge.atomic_pre_enable() -> drm_panel_prepare()  <- us
+	 *     -> dw_mipi_dsi2_bridge_atomic_pre_enable() -> phy_power_on()
+	 *   drm_atomic_bridge_chain_enable()       walks the chain FORWARD
+	 *     -> dw_mipi_dsi2_bridge_atomic_enable() -> set_vid_mode()
+	 *     -> panel_bridge.atomic_enable() -> drm_panel_enable()
+	 *
+	 * So the commands we send here can land on an unpowered PHY. Do NOT
+	 * fail prepare() because of it - just remember and retry from
+	 * .enable(), by which time the PHY (and host) is up.
+	 */
 	tl060fvxs07_init_sequence(&dsi_ctx);
 
 	if (dsi_ctx.accum_err) {
-		/*
-		 * Do NOT swallow this. A silent failure here shows up as
-		 * "backlight on, no picture", which is indistinguishable from
-		 * "the console went to the wrong connector".
-		 */
-		dev_err(ctx->dev, "init sequence failed: %d (short=%d, reset=%d)\n",
-			dsi_ctx.accum_err, short_init_seq, gpio_is_reset);
-		goto disable_iovcc;
+		dev_warn(ctx->dev,
+			 "init sequence failed in prepare: %d (short=%d, reset=%d) - retrying at enable\n",
+			 dsi_ctx.accum_err, short_init_seq, gpio_is_reset);
+		ctx->seq_ok = false;
+		return 0;
 	}
 
+	ctx->seq_ok = true;
 	dev_info(ctx->dev, "panel prepared (%s seq, gpio=%s)\n",
 		 short_init_seq ? "short" : "full",
 		 gpio_is_reset ? "reset" : "enable");
@@ -292,6 +307,41 @@ disable_vdd:
 	if (ctx->vdd)
 		regulator_disable(ctx->vdd);
 	return dsi_ctx.accum_err;
+}
+
+static int tl060fvxs07_enable(struct drm_panel *panel)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+
+	/*
+	 * The DSI host is up by now (PHY powered, video mode running), so this
+	 * is the safe place to send the init sequence if prepare() could not -
+	 * see the ordering note in tl060fvxs07_prepare().
+	 */
+	if (ctx->seq_ok)
+		return 0;
+
+	tl060fvxs07_init_sequence(&dsi_ctx);
+	if (dsi_ctx.accum_err) {
+		dev_err(ctx->dev, "init sequence failed at enable too: %d\n",
+			dsi_ctx.accum_err);
+		return dsi_ctx.accum_err;
+	}
+
+	ctx->seq_ok = true;
+	dev_info(ctx->dev, "panel enabled (%s seq sent here)\n",
+		 short_init_seq ? "short" : "full");
+
+	return 0;
+}
+
+static void tl060fvxs07_disable(struct drm_panel *panel)
+{
+	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
+
+	ctx->seq_ok = false;
 }
 
 static const struct drm_display_mode tl060fvxs07_default_mode = {
@@ -345,6 +395,8 @@ static enum drm_panel_orientation tl060fvxs07_get_orientation(struct drm_panel *
 
 static const struct drm_panel_funcs tl060fvxs07_funcs = {
 	.prepare	= tl060fvxs07_prepare,
+	.enable		= tl060fvxs07_enable,
+	.disable	= tl060fvxs07_disable,
 	.unprepare	= tl060fvxs07_unprepare,
 	.get_modes	= tl060fvxs07_get_modes,
 	.get_orientation = tl060fvxs07_get_orientation,
