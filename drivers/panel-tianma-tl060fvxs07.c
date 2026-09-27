@@ -85,6 +85,34 @@ static bool read_id;
 module_param(read_id, bool, 0644);
 MODULE_PARM_DESC(read_id, "Log a DCS 0x04 read-back after the init sequence");
 
+/*
+ * DSI writes are fire-and-forget: they return success whether or not the panel
+ * ever saw them, so "prepare succeeded" proves nothing. A read (-110 =
+ * ETIMEDOUT when nobody answers) is the only way to tell.
+ *
+ * If the read times out in prepare(), the panel may simply not be listening
+ * until the video clock is running. Force the whole sequence (and the read) to
+ * happen from .enable() instead, i.e. after dw_mipi_dsi2 has switched to video
+ * mode, without rebuilding:
+ *
+ *   panel-tianma-tl060fvxs07.seq_at_enable=1
+ */
+static bool seq_at_enable;
+module_param(seq_at_enable, bool, 0644);
+MODULE_PARM_DESC(seq_at_enable,
+		 "Send the init sequence from .enable() (after video mode) instead of .prepare()");
+
+/*
+ * Three different display timings are floating around for this panel. Pick one
+ * at runtime instead of rebuilding:
+ *   0 = nanopi T6  : 154 MHz, htotal 1180, vtotal 2176
+ *   1 = radxa 5C   : 157 MHz, htotal 1211, vtotal 2182
+ *   2 = qcom origin: 172 MHz, htotal 1317, vtotal 2176
+ */
+static int timing;
+module_param(timing, int, 0644);
+MODULE_PARM_DESC(timing, "Display timing variant: 0=nanopi, 1=radxa, 2=qcom");
+
 struct tl060fvxs07 {
 	struct device *dev;
 	struct drm_panel panel;
@@ -270,7 +298,17 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 	 * So the commands we send here can land on an unpowered PHY. Do NOT
 	 * fail prepare() because of it - just remember and retry from
 	 * .enable(), by which time the PHY (and host) is up.
+	 *
+	 * seq_at_enable=1 skips the sequence here entirely and does it from
+	 * .enable() (i.e. after the host switched to video mode), for the case
+	 * where the panel only starts listening once the video clock runs.
 	 */
+	if (seq_at_enable) {
+		dev_info(ctx->dev, "init sequence deferred to enable (seq_at_enable)\n");
+		ctx->seq_ok = false;
+		return 0;
+	}
+
 	tl060fvxs07_init_sequence(&dsi_ctx);
 
 	if (dsi_ctx.accum_err) {
@@ -286,17 +324,7 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 		 short_init_seq ? "short" : "full",
 		 gpio_is_reset ? "reset" : "enable");
 
-	if (read_id) {
-		int saved = dsi_ctx.accum_err;
-		u8 id[3] = { 0, 0, 0 };
-
-		mipi_dsi_dcs_read_multi(&dsi_ctx, MIPI_DCS_GET_DISPLAY_ID, id,
-					sizeof(id));
-		dev_info(ctx->dev, "DCS 0x04 readback: %02x %02x %02x (rc=%d)\n",
-			 id[0], id[1], id[2], dsi_ctx.accum_err);
-		/* informational only - do not let a failed probe disable the panel */
-		dsi_ctx.accum_err = saved;
-	}
+	tl060fvxs07_maybe_read_id(ctx, &dsi_ctx);
 
 	return 0;
 
@@ -307,6 +335,27 @@ disable_vdd:
 	if (ctx->vdd)
 		regulator_disable(ctx->vdd);
 	return dsi_ctx.accum_err;
+}
+
+/*
+ * DSI writes give no ACK, so the only proof the panel is listening is a read.
+ * Informational: any error is rolled back so this never disables a panel that
+ * is otherwise working.
+ */
+static void tl060fvxs07_maybe_read_id(struct tl060fvxs07 *ctx,
+				      struct mipi_dsi_multi_context *dsi_ctx)
+{
+	int saved;
+	u8 id[3] = { 0, 0, 0 };
+
+	if (!read_id)
+		return;
+
+	saved = dsi_ctx->accum_err;
+	mipi_dsi_dcs_read_multi(dsi_ctx, MIPI_DCS_GET_DISPLAY_ID, id, sizeof(id));
+	dev_info(ctx->dev, "DCS 0x04 readback: %02x %02x %02x (rc=%d)\n",
+		 id[0], id[1], id[2], dsi_ctx->accum_err);
+	dsi_ctx->accum_err = saved;
 }
 
 static int tl060fvxs07_enable(struct drm_panel *panel)
@@ -334,6 +383,8 @@ static int tl060fvxs07_enable(struct drm_panel *panel)
 	dev_info(ctx->dev, "panel enabled (%s seq sent here)\n",
 		 short_init_seq ? "short" : "full");
 
+	tl060fvxs07_maybe_read_id(ctx, &dsi_ctx);
+
 	return 0;
 }
 
@@ -346,35 +397,42 @@ static int tl060fvxs07_disable(struct drm_panel *panel)
 	return 0;
 }
 
-static const struct drm_display_mode tl060fvxs07_default_mode = {
-	.clock		= 154000,	/* kHz */
-
-	.hdisplay	= 1080,
-	.hsync_start	= 1080 + 4,	/* hback-porch */
-	.hsync_end	= 1080 + 4 + 4,	/* hsync-len   */
-	.htotal		= 1080 + 4 + 4 + 92,
-
-	.vdisplay	= 2160,
-	.vsync_start	= 2160 + 6,	/* vback-porch */
-	.vsync_end	= 2160 + 6 + 2,	/* vsync-len   */
-	.vtotal		= 2160 + 6 + 2 + 8,
-
-	.width_mm	= 74,
-	.height_mm	= 133,
-};
-
 static int tl060fvxs07_get_modes(struct drm_panel *panel,
 				 struct drm_connector *connector)
 {
 	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
 	struct drm_display_mode *mode;
 
-	mode = drm_mode_duplicate(connector->dev, &tl060fvxs07_default_mode);
+	/* hback / hsync / hfront - vback / vsync / vfront - clock(kHz) */
+	static const struct drm_display_mode variants[] = {
+		{ /* 0: nanopi T6  */ .clock = 154000,
+		  .hdisplay = 1080, .hsync_start = 1080 + 4,  .hsync_end = 1080 + 4 + 4,
+		  .htotal = 1080 + 4 + 4 + 92,
+		  .vdisplay = 2160, .vsync_start = 2160 + 6,  .vsync_end = 2160 + 6 + 2,
+		  .vtotal = 2160 + 6 + 2 + 8,
+		  .width_mm = 74, .height_mm = 133 },
+		{ /* 1: radxa 5C   */ .clock = 157000,
+		  .hdisplay = 1080, .hsync_start = 1080 + 13, .hsync_end = 1080 + 13 + 3,
+		  .htotal = 1080 + 13 + 3 + 115,
+		  .vdisplay = 2160, .vsync_start = 2160 + 10, .vsync_end = 2160 + 10 + 2,
+		  .vtotal = 2160 + 10 + 2 + 10,
+		  .width_mm = 74, .height_mm = 133 },
+		{ /* 2: qcom origin*/ .clock = 171948,
+		  .hdisplay = 1080, .hsync_start = 1080 + 4,  .hsync_end = 1080 + 4 + 4,
+		  .htotal = 1080 + 4 + 4 + 229,
+		  .vdisplay = 2160, .vsync_start = 2160 + 6,  .vsync_end = 2160 + 6 + 2,
+		  .vtotal = 2160 + 6 + 2 + 8,
+		  .width_mm = 74, .height_mm = 133 },
+	};
+	const struct drm_display_mode *sel = &variants[0];
+
+	if (timing >= 0 && timing < ARRAY_SIZE(variants))
+		sel = &variants[timing];
+
+	mode = drm_mode_duplicate(connector->dev, sel);
 	if (!mode) {
 		dev_err(ctx->dev, "failed to add mode %ux%u@%u\n",
-			tl060fvxs07_default_mode.hdisplay,
-			tl060fvxs07_default_mode.vdisplay,
-			drm_mode_vrefresh(&tl060fvxs07_default_mode));
+			sel->hdisplay, sel->vdisplay, drm_mode_vrefresh(sel));
 		return -ENOMEM;
 	}
 
