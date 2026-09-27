@@ -51,6 +51,8 @@ env:
   # and published from its own repo rather than from here.
   ROOTFS_REPO: iorca/Armbian-rootfs-dev
   ROOTFS_TAG: armbian-rootfs-cache
+  # Persistent fallback for the kernel worktree cache (see the restore step).
+  KW_TAG: armbian-kw-cache
 
 jobs:
   build:
@@ -100,13 +102,40 @@ jobs:
       # caching a ccache dir until Armbian actually routes the compiler through
       # it. If this step ever fails with "Cache size ... over the 10GB limit",
       # drop this path and accept the slow (but working) full rebuild.
-      - name: Restore kernel build tree
-        uses: actions/cache@v4
+      # Track 1 (primary) - actions/cache. Fast, but volatile: evicted after 7
+      # idle days and pushed out by the 10GB LRU.
+      #
+      # Explicit restore/save instead of the combined actions/cache@v4 so the
+      # save can be ordered AFTER the chown step below (compile.sh runs under
+      # sudo, so the tree is root-owned and tar would otherwise fail the save).
+      - name: Restore kernel build tree (cache)
+        id: kcache
+        uses: actions/cache/restore@v4
         with:
           path: armbian-build/cache/sources/linux-kernel-worktree
           key: kernelworktree-${{ runner.os }}-${{ hashFiles('patch/kernel/**', 'config/**') }}
           restore-keys: |
             kernelworktree-${{ runner.os }}-
+
+      # Track 2 (fallback) - a Release. Persistent and cross-branch, so it
+      # survives cache eviction. Only consulted when track 1 missed.
+      - name: Restore kernel build tree (release fallback)
+        if: steps.kcache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/kw armbian-build/cache/sources
+          if gh release download "${KW_TAG}" \
+               --repo "${{ github.repository }}" \
+               --pattern 'kernel-worktree.tar.zst*' \
+               --dir /tmp/kw --clobber; then
+            cat /tmp/kw/kernel-worktree.tar.zst* \
+              | tar --zstd -xf - -C armbian-build/cache/sources
+            echo "kernel worktree restored from release ${KW_TAG}"
+          else
+            echo "no release cache either - full build it is"
+          fi
+          du -sh armbian-build/cache/sources/linux-kernel-worktree 2>/dev/null || true
 
       - name: Fetch prebuilt rootfs cache
         continue-on-error: true
@@ -215,3 +244,45 @@ jobs:
           # the save again
           sudo chmod -R u+rwX \
             armbian-build/cache/sources/linux-kernel-worktree 2>/dev/null || true
+          du -sh armbian-build/cache/sources/linux-kernel-worktree 2>/dev/null || true
+
+      # Track 1 save - cheap, always. Runs after the chown, so tar can read it.
+      - name: Save kernel worktree (cache)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: armbian-build/cache/sources/linux-kernel-worktree
+          key: kernelworktree-${{ runner.os }}-${{ hashFiles('patch/kernel/**', 'config/**') }}
+
+      # Track 2 save - only when this run had to build from scratch, i.e. the
+      # tree is hot and worth persisting, and actions/cache has nothing yet.
+      # Uploading an incremental tree on every run would be pure waste.
+      #
+      # Guarded by size: a release takes 2GB per asset / 10GB in total, and the
+      # download side is throttled to ~3GB/h, so past a few GB this route stops
+      # paying for itself. 9GB -> at most 5 splits of 1900MB.
+      - name: Save kernel worktree (release fallback)
+        if: always() && steps.kcache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd armbian-build/cache/sources
+          size=$(du -sb linux-kernel-worktree 2>/dev/null | cut -f1)
+          echo "worktree raw size: ${size:-unknown} bytes"
+          if [ -z "$size" ] || [ "$size" -gt 9000000000 ]; then
+            echo "SKIP: too big for a release asset (>9GB) - relying on actions/cache alone"
+            exit 0
+          fi
+          tar --zstd -cf /tmp/kw.tar.zst linux-kernel-worktree
+          rm -f /tmp/kw.tar.zst.part*
+          split -b 1900M -d /tmp/kw.tar.zst /tmp/kw.tar.zst.part
+          echo "parts: $(ls /tmp/kw.tar.zst.part* | wc -l), total $(du -sh /tmp/kw.tar.zst | cut -f1)"
+          cd -
+          # create the release once, then replace whatever was there
+          gh release view "${KW_TAG}" >/dev/null 2>&1 || \
+            gh release create "${KW_TAG}" \
+              --title "Armbian kernel worktree cache" \
+              --notes "Incremental kernel build tree for the HZ-EVM-RK3588 MIPI build. Persistent fallback when actions/cache has been evicted."
+          gh release view "${KW_TAG}" --json assets -q '.assets[].name' \
+            | while read -r a; do gh release delete-asset "${KW_TAG}" "$a" -y; done
+          gh release upload "${KW_TAG}" /tmp/kw.tar.zst.part* --clobber
