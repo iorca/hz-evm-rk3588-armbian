@@ -142,13 +142,49 @@ Radxa 那份（`瑞莎/rock5c/.../rock-5a-tianma-display-6fhd.dtsi`）另有简�
 
 ---
 
-## 六、BSP 路径的计划
+## 六、BSP 路径的计划（已拆成两个阶段，先做阶段一）
 
-1. **目标**：先编一个 **BSP 点屏固件**（单一验证：BSP 下这块板 + 这块屏能不能亮）
-2. 成功后，再决定要不要集成进 Armbian 的 `vendor` 分支
-3. 主线那份 dts **不能直接用** —— BSP 的节点/绑定不同，需按 BSP 格式重写：
-   `&dsi0` + `panel@0 { compatible = "simple-panel-dsi"; panel-init-sequence = [...] }`
-   + `dsi,format` / `dsi,lanes` + `reset-gpios` + 背光
+主人决定：**先不管屏，先把 Armbian + BSP 内核跑通。** 两个问题分开解决，
+每阶段成功标准明确，避免互相干扰。
+
+### 阶段一：Armbian + 厂家 BSP 内核（Linux 6.1）—— 不含 MIPI 屏
+
+成功标准：
+- [ ] 用解耦架构（见下）让 GitHub Actions 编出 Armbian 镜像
+- [ ] 内核版本是厂家的 6.1（不是主线的 6.18）
+- [ ] 镜像能启动，串口能登录
+- [ ] （加分）HDMI 有输出
+
+这一阶段**完全不碰 DSI / panel / 背光 / LCD_RESX / 触摸**。
+
+### 阶段二：在 BSP 下点亮 MIPI 屏
+
+阶段一通过后才做。按 BSP 格式写本板的 dts：
+`&dsi0` + `panel@0 { compatible = "simple-panel-dsi"; panel-init-sequence = [...] }`
++ `dsi,format` / `dsi,lanes` + `reset-gpios` + 背光。
+主线那份 dts **不能直接用** —— BSP 的节点/绑定不同，只能参考引脚与功能。
+
+### 解耦架构（两个阶段都适用）
+
+VM 与 GitHub Actions 解耦，**不要装 self-hosted runner**
+（公开仓库有安全风险、VM 必须常开、不可复现）。
+
+```
+【VM：一次性 / SDK 升级时才用，之后可关机】
+  只提取 kernel 源码、u-boot 源码、rkbin 里的 DDR/BL31 blob
+  （prebuilts / buildroot / debian / docs / tools 全部丢弃）
+  各自 git init + commit → push 到 GitHub 新仓库
+  工具链打包 → Release 资产
+
+【GitHub Actions：完全云端，GitHub 托管 runner】
+  clone 上述仓库 + 下载工具链
+  正常跑 Armbian 的 compile.sh
+  （KERNELSOURCE/BOOTSOURCE 可指向本地已 clone 的路径 —— Armbian 的
+   fetch_from_repo 走 git fetch，本地路径是合法 remote URL，已验证）
+  产物发 Release
+```
+
+Armbian 侧还需要确认：怎么指定外部交叉工具链（**待查，别猜变量名**）。
 
 ### 需要从厂家 SDK 确认的东西
 
