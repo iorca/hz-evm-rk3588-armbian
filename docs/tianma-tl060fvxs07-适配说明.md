@@ -206,10 +206,39 @@ docs/tianma-tl060fvxs07-适配说明.md                                    # 本
 zcat /proc/config.gz | grep -E 'DW_MIPI_DSI2|SAMSUNG_DCPHY|PANEL_TIANMA'
 dmesg | grep -iE 'dsi|dcphy|tianma|backlight|drm'
 cat /sys/class/backlight/*/brightness          # 能改 = 背光 PWM 通了
-modetest -M rockchip                            # libdrm-tests，应能看到 DSI-1 connector
+for d in /sys/class/drm/card0-*; do echo "$d $(cat $d/status) $(cat $d/enabled) $(head -1 $d/modes)"; done
 ```
 
 排障顺序：
+
+### 0. "背光亮但无画面" —— 先看 console 落在哪个口
+
+**不要**把"背光亮"当成 panel 起来了：pwm-backlight 在 probe 时就把
+`default-brightness-level` 写出去了，panel 有没有 enable 跟背光无关。
+
+```
+$ for d in /sys/class/drm/card0-*; do echo "$d $(cat $d/status) $(cat $d/enabled) $(head -1 $d/modes)"; done
+/sys/class/drm/card0-DSI-1      connected enabled 1080x2160   ← 屏本身是好的
+/sys/class/drm/card0-HDMI-A-1   connected enabled 1024x768
+/sys/class/drm/card0-HDMI-A-2   connected enabled 1024x768
+```
+
+只要 `card0-DSI-1` 是 `connected enabled` 且 mode 是 1080x2160，**硬件和驱动就已经通了**，
+剩下的只是文本控制台落到了先枚举到的 HDMI-A-1 上（`Console: switching to colour
+frame buffer device 128x48` —— 128x48×8x16 = 1024x768，不是我们的屏）。
+
+修法（**不用重编**），在 `/boot/armbianEnv.txt` 的 `extraargs` 里禁用 HDMI 输出：
+
+```
+extraargs=... video=HDMI-A-1:d video=HDMI-A-2:d
+```
+
+`video=<connector>:d` 是 `drm_fb_helper` 的标准语法（`d` = disable）。
+fb helper 只剩 DSI-1 可用，console 自然就过去了。想恢复 HDMI 就把这两个参数摘掉重启。
+
+要更彻底就在 dts 里把 `&hdmi0` / `&hdmi1` 改成 `status = "disabled"`。
+
+### 1. 真正的故障排查
 
 1. panel 压根没 probe（dmesg 无 `tianma`）→ 检查三个 CONFIG
 2. probe 成功但黑屏 → ①加 `panel-tianma-tl060fvxs07.gpio_is_reset=1`（第 4 节）
@@ -219,3 +248,33 @@ modetest -M rockchip                            # libdrm-tests，应能看到 DS
    或用示波器量 DPHY 的 lane0 有没有 HS 差分信号
 4. 背光不亮 → 确认 `&pwm0` 有没有跑起来、量 GPIO1_A2；必要时把 pinctrl 改成 `pull_up`
 5. 画面方向反 → 打开 dts 里的 `rotation = <90>`
+
+---
+
+## 8. 开机日志里几条无害的噪音（别去查）
+
+### `ERROR:   Error initializing runtime service opteed_fast`
+
+**TF-A（BL31）打的，不是内核也不是 U-Boot。** 同一段前面那行 WARNING 就是答案：
+
+```
+WARNING: No OPTEE provided by BL2 boot loader, Booting device without OPTEE initialization. SMC`s destined for OPTEE will return SMC_UNK
+ERROR:   Error initializing runtime service opteed_fast
+INFO:    BL31: Preparing for EL3 exit to normal world     ← 照样继续往下跑
+```
+
+- 出处：`common/runtime_svc.c:415-421` —— `rc = service->init(); if (rc != 0) { ERROR(...); continue; }`。
+  **是 `continue`，不是 panic**，所以启动照常。
+- 成因：rkbin 的 BL31 二进制（`BL31: v2.3 ... fwver: v1.48`）是按 `SPD=opteed` 编的，
+  但 Armbian 的 `BOOT_SCENARIO=binman` 只塞了 BL31 + DDR(TPL)，**没有 BL32 / OP-TEE 镜像**。
+  于是 OP-TEE 初始化失败，服务名 `opteed_fast`（OP-TEE 的 fast SMC 那一路）报这个错。
+- 后果：**本机没有 OP-TEE**。没有 `/dev/tee0`、没有 tee-supplicant，
+  OP-TEE 提供的高级功能（安全存储、密钥、Widevine DRM、fTPM）都用不了。
+  对 CLI/服务器用途**零影响**。
+- 要不要修：不用。真要 OP-TEE 得单独编 BL32 并让 binman 把它塞进去，收益对这台机器没有。
+
+### `Loading Boot0000 'mmc 0' failed` / `Boot failed (err=-14)`
+
+U-Boot 标准启动流程：先试 EFI boot manager，失败后回落 `distro_bootcmd`
+扫 `mmc@fe2c0000.bootdev.part_1` 的 `/boot.scr`。日志里紧跟着就是
+`** Booting bootflow ... with script` + `Boot script loaded from mmc 0:1`，**正常**。
