@@ -33,13 +33,9 @@
 
 /*
  * The panel uses a 0x9f / 0xf0 password pair to open its vendor registers,
- * then two 60-byte gamma tables (0xea / 0xeb).
- *
- * Set to 1 to use the reduced sequence that several of the community
- * adaptions report as sufficient (exit_sleep + display_on only).  Useful as
- * a first debug step if the full sequence yields a blank panel.
+ * then two 60-byte gamma tables (0xea / 0xeb).  See the short_init_seq /
+ * gpio_is_reset module params below for the runtime A/B switches.
  */
-#define TL060FVXS07_SHORT_INIT_SEQ 0
 
 /* Password / vendor page */
 #define TL060FVXS07_PASSWORD_ON_A2	0x9f, 0xa5, 0xa5
@@ -62,6 +58,18 @@ module_param(gpio_is_reset, bool, 0644);
 MODULE_PARM_DESC(gpio_is_reset,
 		 "Treat the enable GPIO as a reset line: assert-hold-release "
 		 "instead of driving it high and keeping it there");
+
+/*
+ * Debug aid: the full vendor sequence needs the 0x9f/0xf0 unlock dance.  If the
+ * panel stays black, try the reduced one (exit_sleep + display_on) without
+ * rebuilding:
+ *
+ *   panel-tianma-tl060fvxs07.short_init_seq=1   (built-in: on the kernel cmdline)
+ */
+static bool short_init_seq;
+module_param(short_init_seq, bool, 0644);
+MODULE_PARM_DESC(short_init_seq,
+		 "Use the reduced init sequence (exit sleep + display on only)");
 
 struct tl060fvxs07 {
 	struct device *dev;
@@ -102,7 +110,7 @@ static inline struct tl060fvxs07 *panel_to_ctx(struct drm_panel *panel)
  */
 static void tl060fvxs07_init_sequence(struct mipi_dsi_multi_context *dsi_ctx)
 {
-	if (TL060FVXS07_SHORT_INIT_SEQ) {
+	if (short_init_seq) {
 		mipi_dsi_dcs_exit_sleep_mode_multi(dsi_ctx);
 		mipi_dsi_msleep(dsi_ctx, 120);
 		mipi_dsi_dcs_set_display_on_multi(dsi_ctx);
@@ -224,11 +232,21 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 	tl060fvxs07_drive_gpio(ctx->reset_gpio, true);
 
 	tl060fvxs07_init_sequence(&dsi_ctx);
-	if (!dsi_ctx.accum_err)
-		dev_dbg(ctx->dev, "init sequence sent\n");
 
-	if (dsi_ctx.accum_err)
+	if (dsi_ctx.accum_err) {
+		/*
+		 * Do NOT swallow this. A silent failure here shows up as
+		 * "backlight on, no picture", which is indistinguishable from
+		 * "the console went to the wrong connector".
+		 */
+		dev_err(ctx->dev, "init sequence failed: %d (short=%d, reset=%d)\n",
+			dsi_ctx.accum_err, short_init_seq, gpio_is_reset);
 		goto disable_iovcc;
+	}
+
+	dev_info(ctx->dev, "panel prepared (%s seq, gpio=%s)\n",
+		 short_init_seq ? "short" : "full",
+		 gpio_is_reset ? "reset" : "enable");
 
 	return 0;
 
