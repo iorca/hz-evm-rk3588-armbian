@@ -31,6 +31,15 @@ on:
       - "drivers/**"
       - ".github/workflows/build-mipi.yml"
 
+# Serialise instead of running side by side. The kernel worktree cache is
+# written in actions/cache's POST step, i.e. AFTER the job finishes - so a run
+# can only ever consume the cache of a run that already completed. Running N
+# pushes in parallel means N full builds; queued means 1 full build + (N-1)
+# incremental ones.
+concurrency:
+  group: mipi-build-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # Pinned on purpose. The rootfs cache name embeds a hash of armbian/build's
   # lib/functions/rootfs/{create-cache,rootfs-create}.sh plus the aggregated
@@ -183,3 +192,26 @@ jobs:
           fail_on_unmatched_files: true
           prerelease: false
           draft: false
+
+      # MUST run before the job ends, and MUST be if: always().
+      #
+      # compile.sh runs under sudo, so everything the kernel build generates is
+      # owned by root. actions/cache's save step runs as the plain runner user,
+      # so tar hits files it cannot read and the WHOLE save aborts:
+      #
+      #   tar: .../linux-kernel-worktree/.../usr/initramfs_data.cpio:
+      #        Cannot open: Permission denied
+      #   Warning: Failed to save: "/usr/bin/tar" failed with error: exit code 2
+      #
+      # Observed on the very first run that had this cache step: "Cache not
+      # found" on restore (expected, nothing published yet) and then no cache
+      # written at all, so the next run started from scratch too.
+      - name: Make the kernel worktree readable for the cache save
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            armbian-build/cache/sources/linux-kernel-worktree 2>/dev/null || true
+          # belt and braces: anything with a still-restrictive mode would fail
+          # the save again
+          sudo chmod -R u+rwX \
+            armbian-build/cache/sources/linux-kernel-worktree 2>/dev/null || true
