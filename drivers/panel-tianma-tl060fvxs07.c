@@ -337,11 +337,13 @@ static int tl060fvxs07_enable(struct drm_panel *panel)
 	return 0;
 }
 
-static void tl060fvxs07_disable(struct drm_panel *panel)
+static int tl060fvxs07_disable(struct drm_panel *panel)
 {
 	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
 
 	ctx->seq_ok = false;
+
+	return 0;
 }
 
 static const struct drm_display_mode tl060fvxs07_default_mode = {

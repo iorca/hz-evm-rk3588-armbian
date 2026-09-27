@@ -32,15 +32,15 @@ Signed-off-by: Armbian board overlay <nobody@example.com>
 ---
  drivers/gpu/drm/panel/Kconfig                    |  12 ++
  drivers/gpu/drm/panel/Makefile                   |   1 +
- drivers/gpu/drm/panel/panel-tianma-tl060fvxs07.c | 508 +
- 3 files changed, 521 insertions(+)
+ drivers/gpu/drm/panel/panel-tianma-tl060fvxs07.c | 510 +
+ 3 files changed, 523 insertions(+)
 
 diff --git a/drivers/gpu/drm/panel/panel-tianma-tl060fvxs07.c b/drivers/gpu/drm/panel/panel-tianma-tl060fvxs07.c
 new file mode 100644
 index 000000000000..111111111111
 --- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-tianma-tl060fvxs07.c
-@@ -0,0 +1,508 @@
+@@ -0,0 +1,510 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Tianma TL060FVXS07 6.0" 1080x2160 MIPI-DSI video mode panel driver
@@ -380,11 +380,13 @@ index 000000000000..111111111111
 +	return 0;
 +}
 +
-+static void tl060fvxs07_disable(struct drm_panel *panel)
++static int tl060fvxs07_disable(struct drm_panel *panel)
 +{
 +	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
 +
 +	ctx->seq_ok = false;
++
++	return 0;
 +}
 +
 +static const struct drm_display_mode tl060fvxs07_default_mode = {
