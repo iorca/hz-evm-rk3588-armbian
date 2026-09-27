@@ -253,6 +253,27 @@ static int tl060fvxs07_unprepare(struct drm_panel *panel)
 	return 0;
 }
 
+/*
+ * DSI writes give no ACK, so the only proof the panel is listening is a read.
+ * Informational: any error is rolled back so this never disables a panel that
+ * is otherwise working.
+ */
+static void tl060fvxs07_maybe_read_id(struct tl060fvxs07 *ctx,
+				      struct mipi_dsi_multi_context *dsi_ctx)
+{
+	int saved;
+	u8 id[3] = { 0, 0, 0 };
+
+	if (!read_id)
+		return;
+
+	saved = dsi_ctx->accum_err;
+	mipi_dsi_dcs_read_multi(dsi_ctx, MIPI_DCS_GET_DISPLAY_ID, id, sizeof(id));
+	dev_info(ctx->dev, "DCS 0x04 readback: %02x %02x %02x (rc=%d)\n",
+		 id[0], id[1], id[2], dsi_ctx->accum_err);
+	dsi_ctx->accum_err = saved;
+}
+
 static int tl060fvxs07_prepare(struct drm_panel *panel)
 {
 	struct tl060fvxs07 *ctx = panel_to_ctx(panel);
@@ -328,34 +349,10 @@ static int tl060fvxs07_prepare(struct drm_panel *panel)
 
 	return 0;
 
-disable_iovcc:
-	if (ctx->iovcc)
-		regulator_disable(ctx->iovcc);
 disable_vdd:
 	if (ctx->vdd)
 		regulator_disable(ctx->vdd);
 	return dsi_ctx.accum_err;
-}
-
-/*
- * DSI writes give no ACK, so the only proof the panel is listening is a read.
- * Informational: any error is rolled back so this never disables a panel that
- * is otherwise working.
- */
-static void tl060fvxs07_maybe_read_id(struct tl060fvxs07 *ctx,
-				      struct mipi_dsi_multi_context *dsi_ctx)
-{
-	int saved;
-	u8 id[3] = { 0, 0, 0 };
-
-	if (!read_id)
-		return;
-
-	saved = dsi_ctx->accum_err;
-	mipi_dsi_dcs_read_multi(dsi_ctx, MIPI_DCS_GET_DISPLAY_ID, id, sizeof(id));
-	dev_info(ctx->dev, "DCS 0x04 readback: %02x %02x %02x (rc=%d)\n",
-		 id[0], id[1], id[2], dsi_ctx->accum_err);
-	dsi_ctx->accum_err = saved;
 }
 
 static int tl060fvxs07_enable(struct drm_panel *panel)
