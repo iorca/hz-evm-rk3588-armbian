@@ -78,6 +78,27 @@ jobs:
           cp -r config armbian-build/
           cp -r patch armbian-build/
 
+      # Kernel compilation is ~80% of a full run (measured: kernel_build
+      # 4664s out of a 5840s build). The rootfs is already cached (see the
+      # next step, and Armbian-rootfs-dev), so this is the only big lever left.
+      #
+      # Armbian never runs mrproper/make clean on its kernel worktree and its
+      # path is deterministic, so restoring it makes the next build incremental:
+      # touching one panel .c recompiles one object instead of the whole tree.
+      #
+      # NOTE: ccache is installed but NOT wired in - the log shows
+      # "Ccache result [ hit=0 miss=0 (0%) ]" - so there is nothing to gain from
+      # caching a ccache dir until Armbian actually routes the compiler through
+      # it. If this step ever fails with "Cache size ... over the 10GB limit",
+      # drop this path and accept the slow (but working) full rebuild.
+      - name: Restore kernel build tree
+        uses: actions/cache@v4
+        with:
+          path: armbian-build/cache/sources/linux-kernel-worktree
+          key: kernelworktree-${{ runner.os }}-${{ hashFiles('patch/kernel/**', 'config/**') }}
+          restore-keys: |
+            kernelworktree-${{ runner.os }}-
+
       - name: Fetch prebuilt rootfs cache
         continue-on-error: true
         env:
